@@ -74,6 +74,8 @@ private fun AppRoot() {
     var params by remember { mutableStateOf<JSONObject?>(null) }
     var isLoadingParams by remember { mutableStateOf(false) }
     var paramsError by remember { mutableStateOf<String?>(null) }
+    var isSavingParam by remember { mutableStateOf(false) }
+    var saveParamError by remember { mutableStateOf<String?>(null) }
 
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
@@ -158,6 +160,23 @@ private fun AppRoot() {
         }
     }
 
+    suspend fun setChargingPriority(value: String) {
+        val currentAuth = auth ?: return
+        val currentDevice = device ?: return
+        isSavingParam = true
+        saveParamError = null
+        try {
+            withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "PC", value) }
+            // Re-fetch so the UI reflects what the inverter actually confirmed,
+            // not just what we optimistically assume was applied.
+            params = withContext(Dispatchers.IO) { TumcApi.getParams(currentAuth, currentDevice) }
+        } catch (e: Exception) {
+            saveParamError = "Setting apply nahi ho saki: ${e.message ?: "network error"}"
+        } finally {
+            isSavingParam = false
+        }
+    }
+
     // Try auto-login from saved credentials once, on first composition.
     LaunchedEffect(Unit) {
         val saved = CredentialStore.load(context)
@@ -215,7 +234,12 @@ private fun AppRoot() {
                         params = params,
                         isLoading = isLoadingParams,
                         errorMessage = paramsError,
-                        onBack = { screen = Screen.DASHBOARD }
+                        isSaving = isSavingParam,
+                        saveError = saveParamError,
+                        onBack = { screen = Screen.DASHBOARD },
+                        onSetChargingPriority = { value ->
+                            scope.launch { setChargingPriority(value) }
+                        }
                     )
                 }
                 else -> {

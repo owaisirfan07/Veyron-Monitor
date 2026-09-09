@@ -5,13 +5,28 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.SolarPower
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
+
+/** The one parameter we've explicitly confirmed the meaning of against the real i.Solar app. */
+private const val CHARGING_PRIORITY_KEY = "PC"
+
+private data class PriorityOption(val value: String, val label: String)
+
+private val CHARGING_PRIORITY_OPTIONS = listOf(
+    PriorityOption("1", "Solar First"),
+    PriorityOption("2", "Solar + Utility"),
+    PriorityOption("3", "Solar Only")
+)
+
+/** Raw param strings look like "3 1,2,3" (current value, then comma-separated options). */
+private fun currentValueOf(raw: String?): String? = raw?.trim()?.substringBefore(' ')
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -20,8 +35,13 @@ fun SettingsScreen(
     params: JSONObject?,
     isLoading: Boolean,
     errorMessage: String?,
-    onBack: () -> Unit
+    isSaving: Boolean,
+    saveError: String?,
+    onBack: () -> Unit,
+    onSetChargingPriority: (String) -> Unit
 ) {
+    var pendingChoice by remember { mutableStateOf<PriorityOption?>(null) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -35,19 +55,6 @@ fun SettingsScreen(
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                modifier = Modifier.fillMaxWidth().padding(16.dp)
-            ) {
-                Text(
-                    "Yeh filhal sirf dekhne k liye hai (read-only). Har inverter model k " +
-                        "settings codes different hain -- ghalat command bhejne se inverter ki " +
-                        "configuration disturb ho sakti hai, is liye editing abhi jaan-boojh kar " +
-                        "shamil nahi ki gayi.",
-                    modifier = Modifier.padding(12.dp),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
 
             when {
                 isLoading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -62,21 +69,72 @@ fun SettingsScreen(
                     Text("Koi parameter data nahi mila.")
                 }
                 else -> {
-                    val keys = params.keys().asSequence().sorted().toList()
+                    val currentPriority = currentValueOf(params.optString(CHARGING_PRIORITY_KEY, null))
+
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        item {
+                            ElevatedCard(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Filled.SolarPower, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Charging Priority", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    }
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        "Battery kis source se charge ho -- Solar, Utility, ya dono.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+
+                                    if (isSaving) {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                        Spacer(Modifier.height(12.dp))
+                                    }
+
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        CHARGING_PRIORITY_OPTIONS.forEach { option ->
+                                            val selected = option.value == currentPriority
+                                            OutlinedButton(
+                                                onClick = { if (!selected) pendingChoice = option },
+                                                enabled = !isSaving,
+                                                colors = if (selected) {
+                                                    ButtonDefaults.outlinedButtonColors(
+                                                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                                                    )
+                                                } else {
+                                                    ButtonDefaults.outlinedButtonColors()
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(option.label, modifier = Modifier.weight(1f))
+                                                if (selected) Text("Current", style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                    }
+
+                                    if (saveError != null) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(saveError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+
+                            Text(
+                                "Baaqi sab parameters (dekhne k liye, filhal change nahi honge):",
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        val keys = params.keys().asSequence().sorted().filter { it != CHARGING_PRIORITY_KEY }.toList()
                         items(keys) { key ->
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(
-                                    key,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.weight(1f)
-                                )
+                                Text(key, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
                                 Text(
                                     params.opt(key)?.toString() ?: "--",
                                     style = MaterialTheme.typography.bodyMedium,
@@ -89,5 +147,22 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    pendingChoice?.let { choice ->
+        AlertDialog(
+            onDismissRequest = { pendingChoice = null },
+            title = { Text("Charging Priority badlein?") },
+            text = { Text("Ab se battery \"${choice.label}\" tareeqe se charge hogi. Yeh command seedha inverter ko bheji jaye gi.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSetChargingPriority(choice.value)
+                    pendingChoice = null
+                }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingChoice = null }) { Text("Cancel") }
+            }
+        )
     }
 }

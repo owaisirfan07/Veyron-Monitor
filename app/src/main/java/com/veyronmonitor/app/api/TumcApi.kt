@@ -152,16 +152,30 @@ object TumcApi {
     }
 
     /**
-     * Fetches the raw parameter-set data for a device (read-only for now).
-     * Field meanings are highly model-specific (keyed by prodId/subId), so
-     * this surfaces the raw values rather than guessing a schema; editing
-     * (setParam) is intentionally not implemented yet since sending a
-     * malformed command could disrupt the inverter's configuration.
+     * Fetches the raw parameter-set data for a device. Field meanings are
+     * highly model-specific (keyed by prodId/subId), so this surfaces the
+     * raw values rather than guessing a schema. Only fields we've verified
+     * against the real i.Solar app are exposed as editable in the UI.
      */
     fun getParams(auth: AuthState, device: Device): JSONObject {
         val fields = linkedMapOf("deviceSn" to device.serialNumber)
         val json = post("/api/mobile/paramSet/getParam", fields, auth.token, auth.vrtKey)
         return json.getJSONObject("data")
+    }
+
+    /**
+     * Sends a single parameter change to the inverter. Only used for
+     * parameters we've explicitly confirmed the meaning of against the
+     * real i.Solar app (starting with "PC" -- Charging Priority) to avoid
+     * sending a malformed or misunderstood command.
+     */
+    fun setParam(auth: AuthState, device: Device, key: String, value: String): JSONObject {
+        val commands = JSONObject().put(key, value).toString()
+        val fields = linkedMapOf(
+            "deviceSn" to device.serialNumber,
+            "commands" to commands
+        )
+        return post("/api/mobile/paramSet/setParam", fields, auth.token, auth.vrtKey)
     }
 
     /**
