@@ -15,9 +15,11 @@ import com.veyronmonitor.app.api.TumcApi
 import com.veyronmonitor.app.api.UpdateChecker
 import com.veyronmonitor.app.api.UpdateInfo
 import com.veyronmonitor.app.data.CredentialStore
+import com.veyronmonitor.app.data.EnergyStore
 import com.veyronmonitor.app.model.AuthState
 import com.veyronmonitor.app.model.Device
 import com.veyronmonitor.app.ui.DashboardScreen
+import com.veyronmonitor.app.ui.EnergyScreen
 import com.veyronmonitor.app.ui.LoginScreen
 import com.veyronmonitor.app.ui.SettingsScreen
 import com.veyronmonitor.app.ui.VeyronMonitorTheme
@@ -41,7 +43,7 @@ private const val REFRESH_INTERVAL_MS = 15_000L
 // instead of on every single tick, to keep things light.
 private const val DEVICE_STATUS_EVERY_N_POLLS = 4
 
-private enum class Screen { DASHBOARD, SETTINGS }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,6 +78,8 @@ private fun AppRoot() {
     var paramsError by remember { mutableStateOf<String?>(null) }
     var isSavingParam by remember { mutableStateOf(false) }
     var saveParamError by remember { mutableStateOf<String?>(null) }
+
+    var energyState by remember { mutableStateOf(EnergyStore.load(context)) }
 
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
@@ -125,6 +129,25 @@ private fun AppRoot() {
             data = fresh
             lastUpdatedAt = System.currentTimeMillis()
             errorMessage = null
+
+            // Accumulate energy: multiply the current power reading (W) by
+            // the time elapsed since the last sample (hours) to add watt-hours.
+            // Capped at 2 minutes per step so a long gap (app backgrounded,
+            // phone asleep) doesn't get misread as sustained high power.
+            val now = System.currentTimeMillis()
+            if (energyState.lastSampleAt > 0L) {
+                val elapsedHours = ((now - energyState.lastSampleAt).coerceAtMost(2 * 60_000L)) / 3_600_000.0
+                val solarWatts = fresh.optDouble("pvInputPower1", 0.0).takeIf { !it.isNaN() } ?: 0.0
+                val gridWatts = fresh.optDouble("gridPowerInputActiveTotal", 0.0).takeIf { !it.isNaN() } ?: 0.0
+                energyState = energyState.copy(
+                    solarWh = energyState.solarWh + solarWatts * elapsedHours,
+                    gridWh = energyState.gridWh + gridWatts * elapsedHours,
+                    lastSampleAt = now
+                )
+            } else {
+                energyState = energyState.copy(lastSampleAt = now)
+            }
+            EnergyStore.save(context, energyState)
 
             // Periodically re-check the device list to refresh online/offline
             // status (it doesn't come back with the live-data endpoint).
@@ -228,6 +251,17 @@ private fun AppRoot() {
                         onLogin = ::attemptLogin
                     )
                 }
+                screen == Screen.ENERGY -> {
+                    EnergyScreen(
+                        solarWh = energyState.solarWh,
+                        gridWh = energyState.gridWh,
+                        solarSince = energyState.solarSince,
+                        gridSince = energyState.gridSince,
+                        onBack = { screen = Screen.DASHBOARD },
+                        onResetSolar = { energyState = EnergyStore.resetSolar(context, energyState) },
+                        onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) }
+                    )
+                }
                 screen == Screen.SETTINGS -> {
                     SettingsScreen(
                         deviceName = device?.displayName ?: "Inverter",
@@ -259,6 +293,7 @@ private fun AppRoot() {
                             screen = Screen.SETTINGS
                             scope.launch { loadParams() }
                         },
+                        onOpenEnergy = { screen = Screen.ENERGY },
                         onLogout = {
                             CredentialStore.clear(context)
                             auth = null

@@ -49,6 +49,7 @@ fun DashboardScreen(
     errorMessage: String?,
     onRefresh: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenEnergy: () -> Unit,
     onLogout: () -> Unit
 ) {
     Scaffold(
@@ -74,6 +75,9 @@ fun DashboardScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenEnergy) {
+                        Icon(Icons.Filled.QueryStats, contentDescription = "Energy Units")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Parameters")
                     }
