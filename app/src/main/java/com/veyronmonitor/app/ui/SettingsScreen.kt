@@ -38,7 +38,8 @@ fun SettingsScreen(
     isSaving: Boolean,
     saveError: String?,
     onBack: () -> Unit,
-    onSetChargingPriority: (String) -> Unit
+    onSetChargingPriority: (String) -> Unit,
+    onOpenSchedule: () -> Unit
 ) {
     var pendingChoice by remember { mutableStateOf<PriorityOption?>(null) }
 
@@ -117,6 +118,11 @@ fun SettingsScreen(
                                     if (saveError != null) {
                                         Spacer(Modifier.height(8.dp))
                                         Text(saveError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                    }
+
+                                    Spacer(Modifier.height(12.dp))
+                                    OutlinedButton(onClick = onOpenSchedule, modifier = Modifier.fillMaxWidth()) {
+                                        Text("Automatic Schedule Set Karein")
                                     }
                                 }
                             }

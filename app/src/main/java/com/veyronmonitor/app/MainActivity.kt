@@ -2,7 +2,9 @@ package com.veyronmonitor.app
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -16,12 +18,16 @@ import com.veyronmonitor.app.api.UpdateChecker
 import com.veyronmonitor.app.api.UpdateInfo
 import com.veyronmonitor.app.data.CredentialStore
 import com.veyronmonitor.app.data.EnergyStore
+import com.veyronmonitor.app.data.ChargeSchedule
+import com.veyronmonitor.app.data.ScheduleStore
+import com.veyronmonitor.app.schedule.AlarmScheduler
 import com.veyronmonitor.app.model.AuthState
 import com.veyronmonitor.app.model.Device
 import com.veyronmonitor.app.ui.DashboardScreen
 import com.veyronmonitor.app.ui.EnergyHistoryScreen
 import com.veyronmonitor.app.ui.EnergyScreen
 import com.veyronmonitor.app.ui.LoginScreen
+import com.veyronmonitor.app.ui.ScheduleScreen
 import com.veyronmonitor.app.ui.SettingsScreen
 import com.veyronmonitor.app.ui.VeyronMonitorTheme
 import kotlinx.coroutines.Dispatchers
@@ -44,7 +50,7 @@ private const val REFRESH_INTERVAL_MS = 15_000L
 // instead of on every single tick, to keep things light.
 private const val DEVICE_STATUS_EVERY_N_POLLS = 4
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY, SCHEDULE }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -81,6 +87,7 @@ private fun AppRoot() {
     var saveParamError by remember { mutableStateOf<String?>(null) }
 
     var energyState by remember { mutableStateOf(EnergyStore.load(context)) }
+    var schedules by remember { mutableStateOf(ScheduleStore.getAll(context)) }
 
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
@@ -269,6 +276,35 @@ private fun AppRoot() {
                         onViewHistory = { screen = Screen.HISTORY }
                     )
                 }
+                screen == Screen.SCHEDULE -> {
+                    ScheduleScreen(
+                        schedules = schedules,
+                        needsExactAlarmPermission = !AlarmScheduler.canScheduleExact(context),
+                        onRequestExactAlarmPermission = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                                        .setData(Uri.parse("package:${context.packageName}"))
+                                )
+                            }
+                        },
+                        onAdd = { newSchedule ->
+                            schedules = ScheduleStore.add(context, newSchedule)
+                            AlarmScheduler.schedule(context, newSchedule)
+                        },
+                        onToggle = { id, enabled ->
+                            schedules = ScheduleStore.setEnabled(context, id, enabled)
+                            val s = schedules.first { it.id == id }
+                            if (enabled) AlarmScheduler.schedule(context, s) else AlarmScheduler.cancel(context, s)
+                        },
+                        onRemove = { id ->
+                            val toCancel = schedules.firstOrNull { it.id == id }
+                            schedules = ScheduleStore.remove(context, id)
+                            toCancel?.let { AlarmScheduler.cancel(context, it) }
+                        },
+                        onBack = { screen = Screen.SETTINGS }
+                    )
+                }
                 screen == Screen.SETTINGS -> {
                     SettingsScreen(
                         deviceName = device?.displayName ?: "Inverter",
@@ -280,7 +316,8 @@ private fun AppRoot() {
                         onBack = { screen = Screen.DASHBOARD },
                         onSetChargingPriority = { value ->
                             scope.launch { setChargingPriority(value) }
-                        }
+                        },
+                        onOpenSchedule = { screen = Screen.SCHEDULE }
                     )
                 }
                 else -> {
