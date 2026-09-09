@@ -32,7 +32,8 @@ fun EnergyScreen(
     gridSince: Long,
     onBack: () -> Unit,
     onResetSolar: () -> Unit,
-    onResetGrid: () -> Unit
+    onResetGrid: () -> Unit,
+    onViewHistory: () -> Unit
 ) {
     var confirmReset by remember { mutableStateOf<String?>(null) } // "solar" | "grid" | null
 
@@ -77,6 +78,10 @@ fun EnergyScreen(
                 sinceText = "Since ${formatSince(gridSince)}",
                 onReset = { confirmReset = "grid" }
             )
+
+            Button(onClick = onViewHistory, modifier = Modifier.fillMaxWidth()) {
+                Text("View Daily History")
+            }
         }
     }
 

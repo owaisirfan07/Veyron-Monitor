@@ -19,6 +19,7 @@ import com.veyronmonitor.app.data.EnergyStore
 import com.veyronmonitor.app.model.AuthState
 import com.veyronmonitor.app.model.Device
 import com.veyronmonitor.app.ui.DashboardScreen
+import com.veyronmonitor.app.ui.EnergyHistoryScreen
 import com.veyronmonitor.app.ui.EnergyScreen
 import com.veyronmonitor.app.ui.LoginScreen
 import com.veyronmonitor.app.ui.SettingsScreen
@@ -43,7 +44,7 @@ private const val REFRESH_INTERVAL_MS = 15_000L
 // instead of on every single tick, to keep things light.
 private const val DEVICE_STATUS_EVERY_N_POLLS = 4
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -131,7 +132,8 @@ private fun AppRoot() {
             errorMessage = null
 
             // Accumulate energy: multiply the current power reading (W) by
-            // the time elapsed since the last sample (hours) to add watt-hours.
+            // the time elapsed since the last sample (hours) to add watt-hours,
+            // both to the lifetime totals and today's history bucket.
             // Capped at 2 minutes per step so a long gap (app backgrounded,
             // phone asleep) doesn't get misread as sustained high power.
             val now = System.currentTimeMillis()
@@ -139,15 +141,13 @@ private fun AppRoot() {
                 val elapsedHours = ((now - energyState.lastSampleAt).coerceAtMost(2 * 60_000L)) / 3_600_000.0
                 val solarWatts = fresh.optDouble("pvInputPower1", 0.0).takeIf { !it.isNaN() } ?: 0.0
                 val gridWatts = fresh.optDouble("gridPowerInputActiveTotal", 0.0).takeIf { !it.isNaN() } ?: 0.0
-                energyState = energyState.copy(
-                    solarWh = energyState.solarWh + solarWatts * elapsedHours,
-                    gridWh = energyState.gridWh + gridWatts * elapsedHours,
-                    lastSampleAt = now
-                )
+                energyState = EnergyStore.addSample(context, energyState, solarWatts, gridWatts, elapsedHours)
+                    .copy(lastSampleAt = now)
+                EnergyStore.save(context, energyState)
             } else {
                 energyState = energyState.copy(lastSampleAt = now)
+                EnergyStore.save(context, energyState)
             }
-            EnergyStore.save(context, energyState)
 
             // Periodically re-check the device list to refresh online/offline
             // status (it doesn't come back with the live-data endpoint).
@@ -251,6 +251,12 @@ private fun AppRoot() {
                         onLogin = ::attemptLogin
                     )
                 }
+                screen == Screen.HISTORY -> {
+                    EnergyHistoryScreen(
+                        records = EnergyStore.getHistory(context, energyState),
+                        onBack = { screen = Screen.ENERGY }
+                    )
+                }
                 screen == Screen.ENERGY -> {
                     EnergyScreen(
                         solarWh = energyState.solarWh,
@@ -259,7 +265,8 @@ private fun AppRoot() {
                         gridSince = energyState.gridSince,
                         onBack = { screen = Screen.DASHBOARD },
                         onResetSolar = { energyState = EnergyStore.resetSolar(context, energyState) },
-                        onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) }
+                        onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) },
+                        onViewHistory = { screen = Screen.HISTORY }
                     )
                 }
                 screen == Screen.SETTINGS -> {
