@@ -8,6 +8,11 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.Settings as SettingsIcon
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,6 +25,7 @@ import com.veyronmonitor.app.data.CredentialStore
 import com.veyronmonitor.app.data.EnergyStore
 import com.veyronmonitor.app.data.ChargeSchedule
 import com.veyronmonitor.app.data.ScheduleStore
+import com.veyronmonitor.app.data.WarningLogStore
 import com.veyronmonitor.app.schedule.AlarmScheduler
 import com.veyronmonitor.app.model.AuthState
 import com.veyronmonitor.app.model.Device
@@ -29,6 +35,7 @@ import com.veyronmonitor.app.ui.EnergyScreen
 import com.veyronmonitor.app.ui.LoginScreen
 import com.veyronmonitor.app.ui.ScheduleScreen
 import com.veyronmonitor.app.ui.SettingsScreen
+import com.veyronmonitor.app.ui.WarningsScreen
 import com.veyronmonitor.app.ui.VeyronMonitorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -50,7 +57,7 @@ private const val REFRESH_INTERVAL_MS = 15_000L
 // instead of on every single tick, to keep things light.
 private const val DEVICE_STATUS_EVERY_N_POLLS = 4
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY, SCHEDULE }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY, SCHEDULE, WARNINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,6 +95,7 @@ private fun AppRoot() {
 
     var energyState by remember { mutableStateOf(EnergyStore.load(context)) }
     var schedules by remember { mutableStateOf(ScheduleStore.getAll(context)) }
+    var hasUnreadWarnings by remember { mutableStateOf(WarningLogStore.hasUnread(context)) }
 
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
 
@@ -155,6 +163,15 @@ private fun AppRoot() {
                 energyState = energyState.copy(lastSampleAt = now)
                 EnergyStore.save(context, energyState)
             }
+
+            // Log any newly-appeared warning/fault codes for the Warnings tab.
+            val warningArr = fresh.optJSONArray("warning")
+            val warningCodes = if (warningArr != null) {
+                (0 until warningArr.length()).map { warningArr.optString(it) }
+            } else emptyList()
+            val faultCode = fresh.opt("fault1")?.toString()
+            WarningLogStore.recordActiveCodes(context, warningCodes, faultCode)
+            hasUnreadWarnings = WarningLogStore.hasUnread(context)
 
             // Periodically re-check the device list to refresh online/offline
             // status (it doesn't come back with the live-data endpoint).
@@ -264,18 +281,6 @@ private fun AppRoot() {
                         onBack = { screen = Screen.ENERGY }
                     )
                 }
-                screen == Screen.ENERGY -> {
-                    EnergyScreen(
-                        solarWh = energyState.solarWh,
-                        gridWh = energyState.gridWh,
-                        solarSince = energyState.solarSince,
-                        gridSince = energyState.gridSince,
-                        onBack = { screen = Screen.DASHBOARD },
-                        onResetSolar = { energyState = EnergyStore.resetSolar(context, energyState) },
-                        onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) },
-                        onViewHistory = { screen = Screen.HISTORY }
-                    )
-                }
                 screen == Screen.SCHEDULE -> {
                     ScheduleScreen(
                         schedules = schedules,
@@ -305,46 +310,106 @@ private fun AppRoot() {
                         onBack = { screen = Screen.SETTINGS }
                     )
                 }
-                screen == Screen.SETTINGS -> {
-                    SettingsScreen(
-                        deviceName = device?.displayName ?: "Inverter",
-                        params = params,
-                        isLoading = isLoadingParams,
-                        errorMessage = paramsError,
-                        isSaving = isSavingParam,
-                        saveError = saveParamError,
-                        onBack = { screen = Screen.DASHBOARD },
-                        onSetChargingPriority = { value ->
-                            scope.launch { setChargingPriority(value) }
-                        },
-                        onOpenSchedule = { screen = Screen.SCHEDULE }
-                    )
-                }
                 else -> {
-                    val lastUpdatedText = lastUpdatedAt?.let {
-                        SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(it))
-                    } ?: "--"
-
-                    DashboardScreen(
-                        deviceName = device?.displayName ?: "Inverter",
-                        isOnline = device?.isOnline ?: false,
-                        data = data,
-                        lastUpdatedText = lastUpdatedText,
-                        isRefreshing = isRefreshing,
-                        errorMessage = errorMessage,
-                        onRefresh = { scope.launch { refreshData() } },
-                        onOpenSettings = {
-                            screen = Screen.SETTINGS
-                            scope.launch { loadParams() }
-                        },
-                        onOpenEnergy = { screen = Screen.ENERGY },
-                        onLogout = {
-                            CredentialStore.clear(context)
-                            auth = null
-                            device = null
-                            data = null
+                    // Main tabs, with a persistent bottom navigation bar.
+                    Scaffold(
+                        bottomBar = {
+                            NavigationBar {
+                                NavigationBarItem(
+                                    selected = screen == Screen.DASHBOARD,
+                                    onClick = { screen = Screen.DASHBOARD },
+                                    icon = { Icon(Icons.Filled.Dashboard, contentDescription = "Dashboard") },
+                                    label = { Text("Dashboard") }
+                                )
+                                NavigationBarItem(
+                                    selected = screen == Screen.ENERGY,
+                                    onClick = { screen = Screen.ENERGY },
+                                    icon = { Icon(Icons.Filled.QueryStats, contentDescription = "Energy") },
+                                    label = { Text("Energy") }
+                                )
+                                NavigationBarItem(
+                                    selected = screen == Screen.WARNINGS,
+                                    onClick = {
+                                        screen = Screen.WARNINGS
+                                        WarningLogStore.markAllViewed(context)
+                                        hasUnreadWarnings = false
+                                    },
+                                    icon = {
+                                        BadgedBox(badge = { if (hasUnreadWarnings) Badge() }) {
+                                            Icon(Icons.Filled.Warning, contentDescription = "Warnings")
+                                        }
+                                    },
+                                    label = { Text("Warnings") }
+                                )
+                                NavigationBarItem(
+                                    selected = screen == Screen.SETTINGS,
+                                    onClick = {
+                                        screen = Screen.SETTINGS
+                                        scope.launch { loadParams() }
+                                    },
+                                    icon = { Icon(SettingsIcon, contentDescription = "Settings") },
+                                    label = { Text("Settings") }
+                                )
+                            }
                         }
-                    )
+                    ) { innerPadding ->
+                        Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
+                            when (screen) {
+                                Screen.ENERGY -> EnergyScreen(
+                                    solarWh = energyState.solarWh,
+                                    gridWh = energyState.gridWh,
+                                    solarSince = energyState.solarSince,
+                                    gridSince = energyState.gridSince,
+                                    onBack = { screen = Screen.DASHBOARD },
+                                    onResetSolar = { energyState = EnergyStore.resetSolar(context, energyState) },
+                                    onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) },
+                                    onViewHistory = { screen = Screen.HISTORY }
+                                )
+                                Screen.WARNINGS -> WarningsScreen(
+                                    entries = WarningLogStore.getLog(context)
+                                )
+                                Screen.SETTINGS -> SettingsScreen(
+                                    deviceName = device?.displayName ?: "Inverter",
+                                    params = params,
+                                    isLoading = isLoadingParams,
+                                    errorMessage = paramsError,
+                                    isSaving = isSavingParam,
+                                    saveError = saveParamError,
+                                    onBack = { screen = Screen.DASHBOARD },
+                                    onSetChargingPriority = { value ->
+                                        scope.launch { setChargingPriority(value) }
+                                    },
+                                    onOpenSchedule = { screen = Screen.SCHEDULE }
+                                )
+                                else -> {
+                                    val lastUpdatedText = lastUpdatedAt?.let {
+                                        SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(it))
+                                    } ?: "--"
+
+                                    DashboardScreen(
+                                        deviceName = device?.displayName ?: "Inverter",
+                                        isOnline = device?.isOnline ?: false,
+                                        data = data,
+                                        lastUpdatedText = lastUpdatedText,
+                                        isRefreshing = isRefreshing,
+                                        errorMessage = errorMessage,
+                                        onRefresh = { scope.launch { refreshData() } },
+                                        onOpenSettings = {
+                                            screen = Screen.SETTINGS
+                                            scope.launch { loadParams() }
+                                        },
+                                        onOpenEnergy = { screen = Screen.ENERGY },
+                                        onLogout = {
+                                            CredentialStore.clear(context)
+                                            auth = null
+                                            device = null
+                                            data = null
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

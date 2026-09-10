@@ -76,7 +76,8 @@ object TumcApi {
         path: String,
         fields: LinkedHashMap<String, String>,
         token: String,
-        vrtKey: String
+        vrtKey: String,
+        readTimeoutMs: Int = 10_000
     ): JSONObject {
         val vrt = computeVrt(fields, vrtKey)
         val body = formEncode(fields)
@@ -85,7 +86,7 @@ object TumcApi {
         connection.requestMethod = "POST"
         connection.doOutput = true
         connection.connectTimeout = 10_000
-        connection.readTimeout = 10_000
+        connection.readTimeout = readTimeoutMs
         connection.setRequestProperty("content-type", "application/x-www-form-urlencoded")
         connection.setRequestProperty("token", token)
         connection.setRequestProperty("vrt", vrt)
@@ -175,7 +176,10 @@ object TumcApi {
             "deviceSn" to device.serialNumber,
             "commands" to commands
         )
-        return post("/api/mobile/paramSet/setParam", fields, auth.token, auth.vrtKey)
+        // The dongle has to relay this to the physical inverter and wait for
+        // an acknowledgement, which is much slower than a plain data read --
+        // 10s was too tight and caused false timeouts.
+        return post("/api/mobile/paramSet/setParam", fields, auth.token, auth.vrtKey, readTimeoutMs = 45_000)
     }
 
     /**
