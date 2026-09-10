@@ -55,9 +55,10 @@ fun EnergyScreen(
         ) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
                 Text(
-                    "Yeh app khud calculate karti hai (har 15 second ki power reading se). " +
-                        "Agar phone band ho ya app band ho, us waqt ka hisaab miss ho sakta hai -- " +
-                        "yeh ek estimate hai, official utility meter jaisi 100% exact nahi.",
+                    "Yeh app khud calculate karti hai -- har baar jab cloud se NAYI reading aati " +
+                        "hai (chahe app 'offline' hi kyun na dikhaye), woh count ho jati hai. Sirf " +
+                        "bilkul wahi purani reading dobara nahi gini jati. Yeh ek estimate hai, " +
+                        "official utility meter jaisi 100% exact nahi.",
                     modifier = Modifier.padding(12.dp),
                     style = MaterialTheme.typography.bodySmall
                 )

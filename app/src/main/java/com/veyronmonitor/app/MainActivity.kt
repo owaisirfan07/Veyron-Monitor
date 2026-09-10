@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.QueryStats
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Settings as SettingsIcon
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -45,7 +45,6 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
 
 // How often we re-poll the cloud while the dashboard is open. The dongle
 // itself only pushes new data to the cloud every so often, but polling
@@ -119,13 +118,11 @@ private fun AppRoot() {
                 val devices = withContext(Dispatchers.IO) {
                     TumcApi.getDevices(authResult)
                 }
-
                 if (devices.isEmpty()) {
                     errorMessage = "Koi device is account se register nahi mila."
                     isLoading = false
                     return@launch
                 }
-
                 CredentialStore.save(context, username, password)
                 auth = authResult
                 device = devices.first()
@@ -145,39 +142,57 @@ private fun AppRoot() {
             val fresh = withContext(Dispatchers.IO) {
                 TumcApi.getRealData(currentAuth, currentDevice)
             }
-
             data = fresh
             lastUpdatedAt = System.currentTimeMillis()
             errorMessage = null
 
-            // Accumulate energy: multiply the current power reading (W) by
-            // the time elapsed since the last sample (hours) to add watt-hours,
-            // both to the lifetime totals and today's history bucket.
-            // Capped at 2 minutes per step so a long gap (app backgrounded,
-            // phone asleep) doesn't get misread as sustained high power.
-            val now = System.currentTimeMillis()
-            if (energyState.lastSampleAt > 0L) {
-                val elapsedHours =
-                    ((now - energyState.lastSampleAt).coerceAtMost(2 * 60_000L)) /
-                            3_600_000.0
-                val solarWatts =
-                    fresh.optDouble("pvInputPower1", 0.0).takeIf { !it.isNaN() } ?: 0.0
-                val gridWatts =
-                    fresh.optDouble("gridPowerInputActiveTotal", 0.0)
-                        .takeIf { !it.isNaN() } ?: 0.0
+            // Refresh online/offline status for display purposes only --
+            // it no longer gates energy accounting (see below), since the
+            // flag can flap on and off while the house is still genuinely
+            // running on solar/battery the whole time.
+            try {
+                val devices = withContext(Dispatchers.IO) { TumcApi.getDevices(currentAuth) }
+                devices.firstOrNull { it.serialNumber == currentDevice.serialNumber }?.let {
+                    device = it
+                }
+            } catch (_: Exception) {
+                // non-critical -- keep showing the last known status
+            }
 
-                energyState = EnergyStore.addSample(
-                    context,
-                    energyState,
-                    solarWatts,
-                    gridWatts,
-                    elapsedHours
-                ).copy(lastSampleAt = now)
+            // Accumulate energy using the DEVICE'S OWN reported reading time
+            // ("currentTime"), not our poll interval or the online flag.
+            // This way: (1) a genuinely fresh reading always counts, even if
+            // the app briefly shows "offline"; (2) a repeated/stale reading
+            // (same timestamp as last time) is never double-counted.
+            val deviceTimeMillis = try {
+                SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                    .parse(fresh.optString("currentTime", ""))?.time ?: 0L
+            } catch (_: Exception) { 0L }
 
-                EnergyStore.save(context, energyState)
-            } else {
-                energyState = energyState.copy(lastSampleAt = now)
-                EnergyStore.save(context, energyState)
+            if (deviceTimeMillis > 0L) {
+                when {
+                    energyState.lastDeviceTimestampMillis == 0L -> {
+                        // First sample ever -- just record the baseline.
+                        energyState = energyState.copy(lastDeviceTimestampMillis = deviceTimeMillis)
+                        EnergyStore.save(context, energyState)
+                    }
+                    deviceTimeMillis > energyState.lastDeviceTimestampMillis -> {
+                        // Genuinely new reading -- integrate over the actual
+                        // device-reported gap (capped at 30 min as a sanity limit).
+                        val elapsedHours = (deviceTimeMillis - energyState.lastDeviceTimestampMillis)
+                            .coerceAtMost(30 * 60_000L) / 3_600_000.0
+                        val solarWatts = fresh.optDouble("pvInputPower1", 0.0).takeIf { !it.isNaN() } ?: 0.0
+                        val gridWatts = fresh.optDouble("gridPowerInputActiveTotal", 0.0).takeIf { !it.isNaN() } ?: 0.0
+                        energyState = EnergyStore.addSample(context, energyState, solarWatts, gridWatts, elapsedHours)
+                            .copy(lastDeviceTimestampMillis = deviceTimeMillis)
+                        EnergyStore.save(context, energyState)
+                    }
+                    else -> {
+                        // Same (or older) timestamp as last time -- stale/repeated
+                        // reading, e.g. while reporting is briefly interrupted.
+                        // Skip it entirely so it isn't counted twice.
+                    }
+                }
             }
 
             // Log any newly-appeared warning/fault codes for the Warnings tab.
@@ -185,29 +200,9 @@ private fun AppRoot() {
             val warningCodes = if (warningArr != null) {
                 (0 until warningArr.length()).map { warningArr.optString(it) }
             } else emptyList()
-
             val faultCode = fresh.opt("fault1")?.toString()
             WarningLogStore.recordActiveCodes(context, warningCodes, faultCode)
             hasUnreadWarnings = WarningLogStore.hasUnread(context)
-
-            // Periodically re-check the device list to refresh online/offline
-            // status (it doesn't come back with the live-data endpoint).
-            if (pollCount % DEVICE_STATUS_EVERY_N_POLLS == 0) {
-                try {
-                    val devices =
-                        withContext(Dispatchers.IO) { TumcApi.getDevices(currentAuth) }
-
-                    devices.firstOrNull {
-                        it.serialNumber == currentDevice.serialNumber
-                    }?.let {
-                        device = it
-                    }
-                } catch (_: Exception) {
-                    // non-critical -- keep showing the last known status
-                }
-            }
-
-            pollCount++
         } catch (e: Exception) {
             errorMessage = "Update fail: ${e.message ?: "network error"}"
         } finally {
@@ -221,12 +216,9 @@ private fun AppRoot() {
         isLoadingParams = true
         paramsError = null
         try {
-            params = withContext(Dispatchers.IO) {
-                TumcApi.getParams(currentAuth, currentDevice)
-            }
+            params = withContext(Dispatchers.IO) { TumcApi.getParams(currentAuth, currentDevice) }
         } catch (e: Exception) {
-            paramsError =
-                "Parameters load nahi ho sake: ${e.message ?: "network error"}"
+            paramsError = "Parameters load nahi ho sake: ${e.message ?: "network error"}"
         } finally {
             isLoadingParams = false
         }
@@ -238,18 +230,12 @@ private fun AppRoot() {
         isSavingParam = true
         saveParamError = null
         try {
-            withContext(Dispatchers.IO) {
-                TumcApi.setParam(currentAuth, currentDevice, "PC", value)
-            }
-
+            withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "PC", value) }
             // Re-fetch so the UI reflects what the inverter actually confirmed,
             // not just what we optimistically assume was applied.
-            params = withContext(Dispatchers.IO) {
-                TumcApi.getParams(currentAuth, currentDevice)
-            }
+            params = withContext(Dispatchers.IO) { TumcApi.getParams(currentAuth, currentDevice) }
         } catch (e: Exception) {
-            saveParamError =
-                "Setting apply nahi ho saki: ${e.message ?: "network error"}"
+            saveParamError = "Setting apply nahi ho saki: ${e.message ?: "network error"}"
         } finally {
             isSavingParam = false
         }
@@ -262,13 +248,8 @@ private fun AppRoot() {
             val (u, p) = saved
             isLoading = true
             try {
-                val authResult = withContext(Dispatchers.IO) {
-                    TumcApi.login(u, p)
-                }
-                val devices = withContext(Dispatchers.IO) {
-                    TumcApi.getDevices(authResult)
-                }
-
+                val authResult = withContext(Dispatchers.IO) { TumcApi.login(u, p) }
+                val devices = withContext(Dispatchers.IO) { TumcApi.getDevices(authResult) }
                 if (devices.isNotEmpty()) {
                     auth = authResult
                     device = devices.first()
@@ -297,12 +278,7 @@ private fun AppRoot() {
                 info = info,
                 onDismiss = { updateInfo = null },
                 onUpdate = {
-                    context.startActivity(
-                        Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse(info.apkDownloadUrl)
-                        )
-                    )
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.apkDownloadUrl)))
                 }
             )
         }
@@ -316,27 +292,21 @@ private fun AppRoot() {
                         onLogin = ::attemptLogin
                     )
                 }
-
                 screen == Screen.HISTORY -> {
                     EnergyHistoryScreen(
                         records = EnergyStore.getHistory(context, energyState),
                         onBack = { screen = Screen.ENERGY }
                     )
                 }
-
                 screen == Screen.SCHEDULE -> {
                     ScheduleScreen(
                         schedules = schedules,
-                        needsExactAlarmPermission =
-                            !AlarmScheduler.canScheduleExact(context),
+                        needsExactAlarmPermission = !AlarmScheduler.canScheduleExact(context),
                         onRequestExactAlarmPermission = {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 context.startActivity(
-                                    Intent(
-                                        Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM
-                                    ).setData(
-                                        Uri.parse("package:${context.packageName}")
-                                    )
+                                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                                        .setData(Uri.parse("package:${context.packageName}"))
                                 )
                             }
                         },
@@ -345,31 +315,18 @@ private fun AppRoot() {
                             AlarmScheduler.schedule(context, newSchedule)
                         },
                         onToggle = { id, enabled ->
-                            schedules = ScheduleStore.setEnabled(
-                                context,
-                                id,
-                                enabled
-                            )
+                            schedules = ScheduleStore.setEnabled(context, id, enabled)
                             val s = schedules.first { it.id == id }
-                            if (enabled) {
-                                AlarmScheduler.schedule(context, s)
-                            } else {
-                                AlarmScheduler.cancel(context, s)
-                            }
+                            if (enabled) AlarmScheduler.schedule(context, s) else AlarmScheduler.cancel(context, s)
                         },
                         onRemove = { id ->
-                            val toCancel =
-                                schedules.firstOrNull { it.id == id }
-
+                            val toCancel = schedules.firstOrNull { it.id == id }
                             schedules = ScheduleStore.remove(context, id)
-                            toCancel?.let {
-                                AlarmScheduler.cancel(context, it)
-                            }
+                            toCancel?.let { AlarmScheduler.cancel(context, it) }
                         },
                         onBack = { screen = Screen.SETTINGS }
                     )
                 }
-
                 else -> {
                     // Main tabs, with a persistent bottom navigation bar.
                     Scaffold(
@@ -377,32 +334,16 @@ private fun AppRoot() {
                             NavigationBar {
                                 NavigationBarItem(
                                     selected = screen == Screen.DASHBOARD,
-                                    onClick = {
-                                        screen = Screen.DASHBOARD
-                                    },
-                                    icon = {
-                                        Icon(
-                                            Icons.Filled.Dashboard,
-                                            contentDescription = "Dashboard"
-                                        )
-                                    },
+                                    onClick = { screen = Screen.DASHBOARD },
+                                    icon = { Icon(Icons.Filled.Dashboard, contentDescription = "Dashboard") },
                                     label = { Text("Dashboard") }
                                 )
-
                                 NavigationBarItem(
                                     selected = screen == Screen.ENERGY,
-                                    onClick = {
-                                        screen = Screen.ENERGY
-                                    },
-                                    icon = {
-                                        Icon(
-                                            Icons.Filled.QueryStats,
-                                            contentDescription = "Energy"
-                                        )
-                                    },
+                                    onClick = { screen = Screen.ENERGY },
+                                    icon = { Icon(Icons.Filled.QueryStats, contentDescription = "Energy") },
                                     label = { Text("Energy") }
                                 )
-
                                 NavigationBarItem(
                                     selected = screen == Screen.WARNINGS,
                                     onClick = {
@@ -411,132 +352,70 @@ private fun AppRoot() {
                                         hasUnreadWarnings = false
                                     },
                                     icon = {
-                                        BadgedBox(
-                                            badge = {
-                                                if (hasUnreadWarnings) Badge()
-                                            }
-                                        ) {
-                                            Icon(
-                                                Icons.Filled.Warning,
-                                                contentDescription = "Warnings"
-                                            )
+                                        BadgedBox(badge = { if (hasUnreadWarnings) Badge() }) {
+                                            Icon(Icons.Filled.Warning, contentDescription = "Warnings")
                                         }
                                     },
                                     label = { Text("Warnings") }
                                 )
-
                                 NavigationBarItem(
                                     selected = screen == Screen.SETTINGS,
                                     onClick = {
                                         screen = Screen.SETTINGS
                                         scope.launch { loadParams() }
                                     },
-
-                                    // Use the imported Material Settings icon directly.
-                                    // This fixes the unresolved SettingsIcon reference
-                                    // without changing any other app behaviour.
-                                    icon = {
-                                        Icon(
-                                            Icons.Filled.Settings,
-                                            contentDescription = "Settings"
-                                        )
-                                    },
-
+                                    icon = { Icon(SettingsIcon, contentDescription = "Settings") },
                                     label = { Text("Settings") }
                                 )
                             }
                         }
                     ) { innerPadding ->
-                        Box(
-                            modifier = Modifier
-                                .padding(innerPadding)
-                                .fillMaxSize()
-                        ) {
+                        Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                             when (screen) {
                                 Screen.ENERGY -> EnergyScreen(
                                     solarWh = energyState.solarWh,
                                     gridWh = energyState.gridWh,
                                     solarSince = energyState.solarSince,
                                     gridSince = energyState.gridSince,
-                                    onBack = {
-                                        screen = Screen.DASHBOARD
-                                    },
-                                    onResetSolar = {
-                                        energyState =
-                                            EnergyStore.resetSolar(
-                                                context,
-                                                energyState
-                                            )
-                                    },
-                                    onResetGrid = {
-                                        energyState =
-                                            EnergyStore.resetGrid(
-                                                context,
-                                                energyState
-                                            )
-                                    },
-                                    onViewHistory = {
-                                        screen = Screen.HISTORY
-                                    }
+                                    onBack = { screen = Screen.DASHBOARD },
+                                    onResetSolar = { energyState = EnergyStore.resetSolar(context, energyState) },
+                                    onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) },
+                                    onViewHistory = { screen = Screen.HISTORY }
                                 )
-
                                 Screen.WARNINGS -> WarningsScreen(
                                     entries = WarningLogStore.getLog(context)
                                 )
-
                                 Screen.SETTINGS -> SettingsScreen(
-                                    deviceName =
-                                        device?.displayName ?: "Inverter",
+                                    deviceName = device?.displayName ?: "Inverter",
                                     params = params,
                                     isLoading = isLoadingParams,
                                     errorMessage = paramsError,
                                     isSaving = isSavingParam,
                                     saveError = saveParamError,
-                                    onBack = {
-                                        screen = Screen.DASHBOARD
-                                    },
+                                    onBack = { screen = Screen.DASHBOARD },
                                     onSetChargingPriority = { value ->
-                                        scope.launch {
-                                            setChargingPriority(value)
-                                        }
+                                        scope.launch { setChargingPriority(value) }
                                     },
-                                    onOpenSchedule = {
-                                        screen = Screen.SCHEDULE
-                                    }
+                                    onOpenSchedule = { screen = Screen.SCHEDULE }
                                 )
-
                                 else -> {
-                                    val lastUpdatedText =
-                                        lastUpdatedAt?.let {
-                                            SimpleDateFormat(
-                                                "hh:mm:ss a",
-                                                Locale.getDefault()
-                                            ).format(Date(it))
-                                        } ?: "--"
+                                    val lastUpdatedText = lastUpdatedAt?.let {
+                                        SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(it))
+                                    } ?: "--"
 
                                     DashboardScreen(
-                                        deviceName =
-                                            device?.displayName ?: "Inverter",
-                                        isOnline =
-                                            device?.isOnline ?: false,
+                                        deviceName = device?.displayName ?: "Inverter",
+                                        isOnline = device?.isOnline ?: false,
                                         data = data,
                                         lastUpdatedText = lastUpdatedText,
                                         isRefreshing = isRefreshing,
                                         errorMessage = errorMessage,
-                                        onRefresh = {
-                                            scope.launch {
-                                                refreshData()
-                                            }
-                                        },
+                                        onRefresh = { scope.launch { refreshData() } },
                                         onOpenSettings = {
                                             screen = Screen.SETTINGS
-                                            scope.launch {
-                                                loadParams()
-                                            }
+                                            scope.launch { loadParams() }
                                         },
-                                        onOpenEnergy = {
-                                            screen = Screen.ENERGY
-                                        },
+                                        onOpenEnergy = { screen = Screen.ENERGY },
                                         onLogout = {
                                             CredentialStore.clear(context)
                                             auth = null
@@ -555,19 +434,10 @@ private fun AppRoot() {
 }
 
 @Composable
-private fun UpdateBanner(
-    info: UpdateInfo,
-    onDismiss: () -> Unit,
-    onUpdate: () -> Unit
-) {
-    Surface(
-        color = MaterialTheme.colorScheme.primaryContainer,
-        modifier = Modifier.fillMaxWidth()
-    ) {
+private fun UpdateBanner(info: UpdateInfo, onDismiss: () -> Unit, onUpdate: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -575,15 +445,9 @@ private fun UpdateBanner(
                 "Nayi version available: ${info.versionLabel}",
                 style = MaterialTheme.typography.bodyMedium
             )
-
             Row {
-                TextButton(onClick = onDismiss) {
-                    Text("Baad mein")
-                }
-
-                Button(onClick = onUpdate) {
-                    Text("Update")
-                }
+                TextButton(onClick = onDismiss) { Text("Baad mein") }
+                Button(onClick = onUpdate) { Text("Update") }
             }
         }
     }

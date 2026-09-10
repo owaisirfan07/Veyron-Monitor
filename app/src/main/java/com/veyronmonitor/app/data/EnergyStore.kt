@@ -23,6 +23,7 @@ object EnergyStore {
     private const val KEY_SOLAR_SINCE = "solar_since"
     private const val KEY_GRID_SINCE = "grid_since"
     private const val KEY_LAST_SAMPLE_AT = "last_sample_at"
+    private const val KEY_LAST_DEVICE_TS = "last_device_ts"
 
     private const val KEY_DAY_KEY = "current_day_key"
     private const val KEY_DAY_SOLAR_WH = "current_day_solar_wh"
@@ -38,6 +39,7 @@ object EnergyStore {
         val solarSince: Long,
         val gridSince: Long,
         val lastSampleAt: Long,
+        val lastDeviceTimestampMillis: Long,
         val currentDayKey: String,
         val currentDaySolarWh: Double,
         val currentDayGridWh: Double
@@ -56,6 +58,7 @@ object EnergyStore {
             solarSince = prefs.getLong(KEY_SOLAR_SINCE, now),
             gridSince = prefs.getLong(KEY_GRID_SINCE, now),
             lastSampleAt = prefs.getLong(KEY_LAST_SAMPLE_AT, 0L),
+            lastDeviceTimestampMillis = prefs.getLong(KEY_LAST_DEVICE_TS, 0L),
             currentDayKey = prefs.getString(KEY_DAY_KEY, todayKey()) ?: todayKey(),
             currentDaySolarWh = prefs.getFloat(KEY_DAY_SOLAR_WH, 0f).toDouble(),
             currentDayGridWh = prefs.getFloat(KEY_DAY_GRID_WH, 0f).toDouble()
@@ -69,6 +72,7 @@ object EnergyStore {
             .putLong(KEY_SOLAR_SINCE, state.solarSince)
             .putLong(KEY_GRID_SINCE, state.gridSince)
             .putLong(KEY_LAST_SAMPLE_AT, state.lastSampleAt)
+            .putLong(KEY_LAST_DEVICE_TS, state.lastDeviceTimestampMillis)
             .putString(KEY_DAY_KEY, state.currentDayKey)
             .putFloat(KEY_DAY_SOLAR_WH, state.currentDaySolarWh.toFloat())
             .putFloat(KEY_DAY_GRID_WH, state.currentDayGridWh.toFloat())

@@ -1,7 +1,11 @@
 package com.veyronmonitor.app.ui
 
+import android.content.Intent
+import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -14,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import org.json.JSONObject
@@ -120,30 +125,28 @@ fun DashboardScreen(
             }
 
             if (!isOnline) {
+                val context = LocalContext.current
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
                 ) {
-                    Text(
-                        "Inverter is offline (WiFi dongle disconnected) -- showing last known data.",
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-
-            val warningArr = data.optJSONArray("warning")
-            val hasWarning = warningArr != null && warningArr.length() > 0
-            if (hasWarning) {
-                val codes = (0 until warningArr!!.length()).joinToString(", ") { warningArr.optString(it) }
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
-                ) {
-                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Warning code: $codes", style = MaterialTheme.typography.bodySmall)
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "Inverter is offline (WiFi dongle disconnected) -- showing last known data.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(onClick = {
+                            try {
+                                context.startActivity(Intent(AndroidSettings.Panel.ACTION_WIFI))
+                            } catch (_: Exception) {
+                                context.startActivity(Intent(AndroidSettings.ACTION_WIFI_SETTINGS))
+                            }
+                        }) {
+                            Icon(Icons.Filled.Wifi, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Connect WiFi")
+                        }
                     }
                 }
             }
@@ -187,31 +190,62 @@ fun DashboardScreen(
                 }
             }
 
-            val metrics = listOf(
+            val solarMetrics = listOf(
                 Metric("PV Power", fmt(data.numOrNull("pvInputPower1"), " W", 0), Icons.Filled.SolarPower),
                 Metric("PV Voltage", fmt(data.numOrNull("pvInputVoltage1"), " V"), Icons.Filled.WbSunny),
-                Metric("PV Current", fmt(data.numOrNull("currentInput1"), " A"), Icons.Filled.ElectricBolt),
+                Metric("PV Current", fmt(data.numOrNull("currentInput1"), " A"), Icons.Filled.ElectricBolt)
+            )
+            val batteryMetrics = listOf(
                 Metric("Battery Voltage", fmt(data.numOrNull("batteryVoltage"), " V"), Icons.Filled.Bolt),
                 Metric("Charging Current", fmt(data.numOrNull("chargingCurrent"), " A"), Icons.Filled.BatteryChargingFull),
-                Metric("Discharge Current", fmt(data.numOrNull("dischargingCurrent"), " A"), Icons.Filled.BatteryAlert),
+                Metric("Discharge Current", fmt(data.numOrNull("dischargingCurrent"), " A"), Icons.Filled.BatteryAlert)
+            )
+            val gridMetrics = listOf(
+                Metric("Grid Voltage", fmt(data.numOrNull("gridVoltageR"), " V"), Icons.Filled.ElectricalServices),
                 Metric("Output Voltage", fmt(data.numOrNull("acOutputVoltageR"), " V"), Icons.Filled.Outlet),
                 Metric("Output Frequency", fmt(data.numOrNull("acOutputFrequency"), " Hz"), Icons.Filled.GraphicEq),
                 Metric("Output Load", fmt(data.numOrNull("acOutputLoadTotal"), "%", 0), Icons.Filled.Speed),
                 Metric("Output Active Power", fmt(data.numOrNull("acOutputActivePowerTotal"), " W", 0), Icons.Filled.Power),
-                Metric("Output Apparent Power", fmt(data.numOrNull("acOutputApparentPowerTotal"), " VA", 0), Icons.Filled.PowerInput),
-                Metric("Grid Voltage", fmt(data.numOrNull("gridVoltageR"), " V"), Icons.Filled.ElectricalServices),
+                Metric("Output Apparent Power", fmt(data.numOrNull("acOutputApparentPowerTotal"), " VA", 0), Icons.Filled.PowerInput)
+            )
+            val tempMetrics = listOf(
                 Metric("Inner Temp", fmt(data.numOrNull("innerTemperature"), "\u00b0C", 0), Icons.Filled.Thermostat),
                 Metric("Max Temp", fmt(data.numOrNull("maxTemperature"), "\u00b0C", 0), Icons.Filled.DeviceThermostat)
             )
 
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.weight(1f)
+            Column(
+                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
             ) {
-                items(metrics) { metric -> MetricCard(metric) }
+                MetricSection("Solar (PV)", Icons.Filled.SolarPower, solarMetrics)
+                MetricSection("Battery", Icons.Filled.BatteryChargingFull, batteryMetrics)
+                MetricSection("Grid & Output", Icons.Filled.ElectricalServices, gridMetrics)
+                MetricSection("Temperature", Icons.Filled.Thermostat, tempMetrics)
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetricSection(title: String, icon: ImageVector, metrics: List<Metric>) {
+    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(10.dp))
+        metrics.chunked(2).forEach { rowMetrics ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                rowMetrics.forEach { metric ->
+                    Box(modifier = Modifier.weight(1f)) { MetricCard(metric) }
+                }
+                if (rowMetrics.size == 1) {
+                    Box(modifier = Modifier.weight(1f))
+                }
             }
         }
     }
