@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Settings as SettingsIcon
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -45,6 +46,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
 
 // How often we re-poll the cloud while the dashboard is open. The dongle
 // itself only pushes new data to the cloud every so often, but polling
