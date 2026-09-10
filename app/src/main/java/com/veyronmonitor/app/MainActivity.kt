@@ -359,19 +359,19 @@ private fun AppRoot() {
                                     label = { Text("Warnings") }
                                 )
                                 NavigationBarItem(
-    selected = screen == Screen.SETTINGS,
-    onClick = {
-        screen = Screen.SETTINGS
-        scope.launch { loadParams() }
-    },
-    icon = {
-        Icon(
-            imageVector = SettingsIcon,
-            contentDescription = "Settings"
-        )
-    },
-    label = { Text("Settings") }
-)
+                                        selected = screen == Screen.SETTINGS,
+                                        onClick = {
+                                            screen = Screen.SETTINGS
+                                            scope.launch { loadParams() }
+                                        },
+                                    icon = {
+                                        Icon(
+                                            imageVector = Icons.Filled.Settings,
+                                            contentDescription = "Settings"
+                                        )
+                                    },
+                                        label = { Text("Settings") }
+                                    )
                             }
                         }
                     ) { innerPadding ->
