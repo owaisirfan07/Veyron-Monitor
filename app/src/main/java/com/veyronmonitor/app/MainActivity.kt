@@ -1,4 +1,3 @@
-```kotlin
 package com.veyronmonitor.app
 
 import android.content.Intent
@@ -589,4 +588,3 @@ private fun UpdateBanner(
         }
     }
 }
-```
