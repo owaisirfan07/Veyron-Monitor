@@ -4,15 +4,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
+import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.QueryStats
-import androidx.compose.material.icons.filled.Settings as SettingsIcon
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -305,7 +302,7 @@ private fun AppRoot() {
                         onRequestExactAlarmPermission = {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                                 context.startActivity(
-                                    Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                                    Intent(AndroidSettings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
                                         .setData(Uri.parse("package:${context.packageName}"))
                                 )
                             }
@@ -364,7 +361,7 @@ private fun AppRoot() {
                                         screen = Screen.SETTINGS
                                         scope.launch { loadParams() }
                                     },
-                                    icon = { Icon(SettingsIcon, contentDescription = "Settings") },
+                                    icon = { Icon(Icons.Filled.Settings, contentDescription = "Settings") },
                                     label = { Text("Settings") }
                                 )
                             }
