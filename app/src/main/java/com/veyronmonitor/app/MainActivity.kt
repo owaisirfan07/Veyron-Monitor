@@ -25,6 +25,7 @@ import com.veyronmonitor.app.data.ScheduleStore
 import com.veyronmonitor.app.data.WarningLogStore
 import com.veyronmonitor.app.schedule.AlarmScheduler
 import com.veyronmonitor.app.model.AuthState
+import com.veyronmonitor.app.model.ConnectionStatus
 import com.veyronmonitor.app.model.Device
 import com.veyronmonitor.app.ui.DashboardScreen
 import com.veyronmonitor.app.ui.EnergyHistoryScreen
@@ -412,9 +413,19 @@ private fun AppRoot() {
                                         SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(it))
                                     } ?: "--"
 
+                                    val msSinceFresh = if (lastFreshAt > 0L) System.currentTimeMillis() - lastFreshAt else Long.MAX_VALUE
+                                    val connectionStatus = when {
+                                        lastFreshAt == 0L -> ConnectionStatus.OFFLINE
+                                        msSinceFresh < 60_000L -> ConnectionStatus.LIVE
+                                        msSinceFresh < STALE_THRESHOLD_MS -> ConnectionStatus.RECENT
+                                        else -> ConnectionStatus.OFFLINE
+                                    }
+                                    val minutesSinceFresh = (msSinceFresh / 60_000L).toInt()
+
                                     DashboardScreen(
                                         deviceName = device?.displayName ?: "Inverter",
-                                        isOnline = lastFreshAt > 0L && (System.currentTimeMillis() - lastFreshAt) < STALE_THRESHOLD_MS,
+                                        connectionStatus = connectionStatus,
+                                        minutesSinceFresh = minutesSinceFresh,
                                         data = data,
                                         lastUpdatedText = lastUpdatedText,
                                         isRefreshing = isRefreshing,

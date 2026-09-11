@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.veyronmonitor.app.model.ConnectionStatus
 import org.json.JSONObject
 
 data class Metric(val label: String, val value: String, val icon: ImageVector)
@@ -47,7 +48,8 @@ private fun fmt(value: Double?, unit: String, decimals: Int = 1): String =
 @Composable
 fun DashboardScreen(
     deviceName: String,
-    isOnline: Boolean,
+    connectionStatus: ConnectionStatus,
+    minutesSinceFresh: Int,
     data: JSONObject?,
     lastUpdatedText: String,
     isRefreshing: Boolean,
@@ -57,6 +59,12 @@ fun DashboardScreen(
     onOpenEnergy: () -> Unit,
     onLogout: () -> Unit
 ) {
+    val (dotColor, statusText) = when (connectionStatus) {
+        ConnectionStatus.LIVE -> Color(0xFF22C55E) to "Live"
+        ConnectionStatus.RECENT -> Color(0xFFF59E0B) to "Recent (${minutesSinceFresh}m ago)"
+        ConnectionStatus.OFFLINE -> Color(0xFF9CA3AF) to "Offline"
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -68,11 +76,11 @@ fun DashboardScreen(
                                 modifier = Modifier
                                     .size(8.dp)
                                     .clip(androidx.compose.foundation.shape.CircleShape)
-                                    .background(if (isOnline) Color(0xFF22C55E) else Color(0xFF9CA3AF))
+                                    .background(dotColor)
                             )
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                if (isOnline) "Online" else "Offline",
+                                statusText,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -124,17 +132,21 @@ fun DashboardScreen(
                 return@Column
             }
 
-            if (!isOnline) {
+            if (connectionStatus != ConnectionStatus.LIVE) {
                 val context = LocalContext.current
+                val (bannerColor, message) = if (connectionStatus == ConnectionStatus.RECENT) {
+                    MaterialTheme.colorScheme.tertiaryContainer to
+                        "WiFi seedha connect nahi hai is waqt (shayad slow hai) -- yeh ${minutesSinceFresh} minute purana data hai, bilkul live nahi."
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant to
+                        "Inverter offline -- koi nayi reading nahi aa rahi, purana data dikha rahe hain."
+                }
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    colors = CardDefaults.cardColors(containerColor = bannerColor),
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            "Inverter is offline (WiFi dongle disconnected) -- showing last known data.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text(message, style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(8.dp))
                         OutlinedButton(onClick = {
                             try {
