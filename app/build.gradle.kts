@@ -11,8 +11,8 @@ android {
         applicationId = "com.veyronmonitor.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.12"
+        versionCode = 15
+        versionName = "1.14"
     }
 
     signingConfigs {

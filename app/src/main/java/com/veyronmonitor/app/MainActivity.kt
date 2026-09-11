@@ -54,6 +54,12 @@ private const val REFRESH_INTERVAL_MS = 15_000L
 // instead of on every single tick, to keep things light.
 private const val DEVICE_STATUS_EVERY_N_POLLS = 4
 
+// How long without a genuinely NEW reading before we consider the inverter
+// actually offline. The dongle normally reports every ~5 minutes, so this
+// gives generous slack for a slow/congested WiFi connection without
+// falsely flipping to "offline" the way the cloud's own flag sometimes does.
+private const val STALE_THRESHOLD_MS = 10 * 60_000L
+
 private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY, SCHEDULE, WARNINGS }
 
 class MainActivity : ComponentActivity() {
@@ -82,6 +88,8 @@ private fun AppRoot() {
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var lastUpdatedAt by remember { mutableStateOf<Long?>(null) }
     var pollCount by remember { mutableStateOf(0) }
+    var lastKnownDeviceTime by remember { mutableStateOf(0L) }
+    var lastFreshAt by remember { mutableStateOf(0L) }
 
     var screen by remember { mutableStateOf(Screen.DASHBOARD) }
     var params by remember { mutableStateOf<JSONObject?>(null) }
@@ -167,6 +175,10 @@ private fun AppRoot() {
             } catch (_: Exception) { 0L }
 
             if (deviceTimeMillis > 0L) {
+                if (deviceTimeMillis != lastKnownDeviceTime) {
+                    lastKnownDeviceTime = deviceTimeMillis
+                    lastFreshAt = System.currentTimeMillis()
+                }
                 when {
                     energyState.lastDeviceTimestampMillis == 0L -> {
                         // First sample ever -- just record the baseline.
@@ -402,7 +414,7 @@ private fun AppRoot() {
 
                                     DashboardScreen(
                                         deviceName = device?.displayName ?: "Inverter",
-                                        isOnline = device?.isOnline ?: false,
+                                        isOnline = lastFreshAt > 0L && (System.currentTimeMillis() - lastFreshAt) < STALE_THRESHOLD_MS,
                                         data = data,
                                         lastUpdatedText = lastUpdatedText,
                                         isRefreshing = isRefreshing,
