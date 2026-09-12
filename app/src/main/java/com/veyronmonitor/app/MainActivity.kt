@@ -98,6 +98,7 @@ private fun AppRoot() {
     var paramsError by remember { mutableStateOf<String?>(null) }
     var isSavingParam by remember { mutableStateOf(false) }
     var saveParamError by remember { mutableStateOf<String?>(null) }
+    var saveSuccessMessage by remember { mutableStateOf<String?>(null) }
 
     var energyState by remember { mutableStateOf(EnergyStore.load(context)) }
     var schedules by remember { mutableStateOf(ScheduleStore.getAll(context)) }
@@ -239,11 +240,31 @@ private fun AppRoot() {
         val currentDevice = device ?: return
         isSavingParam = true
         saveParamError = null
+        saveSuccessMessage = null
         try {
             withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "PC", value) }
-            // Re-fetch so the UI reflects what the inverter actually confirmed,
-            // not just what we optimistically assume was applied.
-            params = withContext(Dispatchers.IO) { TumcApi.getParams(currentAuth, currentDevice) }
+
+            // The inverter can take a while to actually apply and report
+            // back the change (the real i.Solar app itself only confirms
+            // "request sent", not "applied"). So we optimistically show the
+            // new selection right away instead of immediately re-fetching
+            // (which would often still show the OLD value and look like
+            // nothing happened), then quietly reconcile with the server
+            // a bit later.
+            params?.let { current ->
+                val rest = current.optString("PC", "").substringAfter(' ', "")
+                val patched = JSONObject(current.toString())
+                patched.put("PC", if (rest.isNotEmpty()) "$value $rest" else value)
+                params = patched
+            }
+            saveSuccessMessage = "Command bhej di gayi hai -- inverter ko apply hone mein thodi der lag sakti hai."
+
+            delay(20_000L)
+            try {
+                params = withContext(Dispatchers.IO) { TumcApi.getParams(currentAuth, currentDevice) }
+            } catch (_: Exception) {
+                // silent -- optimistic value stays on screen if this fails
+            }
         } catch (e: Exception) {
             saveParamError = "Setting apply nahi ho saki: ${e.message ?: "network error"}"
         } finally {
@@ -402,6 +423,7 @@ private fun AppRoot() {
                                     errorMessage = paramsError,
                                     isSaving = isSavingParam,
                                     saveError = saveParamError,
+                                    saveSuccessMessage = saveSuccessMessage,
                                     onBack = { screen = Screen.DASHBOARD },
                                     onSetChargingPriority = { value ->
                                         scope.launch { setChargingPriority(value) }

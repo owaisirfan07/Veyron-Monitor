@@ -37,6 +37,7 @@ fun SettingsScreen(
     errorMessage: String?,
     isSaving: Boolean,
     saveError: String?,
+    saveSuccessMessage: String?,
     onBack: () -> Unit,
     onSetChargingPriority: (String) -> Unit,
     onOpenSchedule: () -> Unit
@@ -113,6 +114,15 @@ fun SettingsScreen(
                                                 if (selected) Text("Current", style = MaterialTheme.typography.labelSmall)
                                             }
                                         }
+                                    }
+
+                                    if (saveSuccessMessage != null) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(
+                                            saveSuccessMessage,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
                                     }
 
                                     if (saveError != null) {
