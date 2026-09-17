@@ -169,6 +169,10 @@ object TumcApi {
      * parameters we've explicitly confirmed the meaning of against the
      * real i.Solar app (starting with "PC" -- Charging Priority) to avoid
      * sending a malformed or misunderstood command.
+     *
+     * Returns the full raw response (not just "data") so the caller can
+     * inspect it for diagnostics -- a successful HTTP/code=0 response does
+     * not always mean the inverter actually applied the change.
      */
     fun setParam(auth: AuthState, device: Device, key: String, value: String): JSONObject {
         val commands = JSONObject().put(key, value).toString()

@@ -242,7 +242,7 @@ private fun AppRoot() {
         saveParamError = null
         saveSuccessMessage = null
         try {
-            withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "PC", value) }
+            val rawResponse = withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "PC", value) }
 
             // The inverter can take a while to actually apply and report
             // back the change (the real i.Solar app itself only confirms
@@ -257,7 +257,11 @@ private fun AppRoot() {
                 patched.put("PC", if (rest.isNotEmpty()) "$value $rest" else value)
                 params = patched
             }
-            saveSuccessMessage = "Command bhej di gayi hai -- inverter ko apply hone mein thodi der lag sakti hai."
+            // TEMP diagnostic: show exactly what the server said, since a
+            // "success" HTTP response doesn't always mean the inverter
+            // actually applied it -- this will tell us if there's a hidden
+            // per-command failure hint we're not otherwise seeing.
+            saveSuccessMessage = "Command bheji gayi. Server jawab: ${rawResponse}"
 
             delay(20_000L)
             try {
@@ -436,13 +440,13 @@ private fun AppRoot() {
                                     } ?: "--"
 
                                     val msSinceFresh = if (lastFreshAt > 0L) System.currentTimeMillis() - lastFreshAt else Long.MAX_VALUE
+                                    val serverSaysOnline = device?.isOnline ?: false
                                     val connectionStatus = when {
-                                        lastFreshAt == 0L -> ConnectionStatus.OFFLINE
                                         msSinceFresh < 60_000L -> ConnectionStatus.LIVE
-                                        msSinceFresh < STALE_THRESHOLD_MS -> ConnectionStatus.RECENT
+                                        serverSaysOnline || msSinceFresh < STALE_THRESHOLD_MS -> ConnectionStatus.RECENT
                                         else -> ConnectionStatus.OFFLINE
                                     }
-                                    val minutesSinceFresh = (msSinceFresh / 60_000L).toInt()
+                                    val minutesSinceFresh = if (lastFreshAt > 0L) (msSinceFresh / 60_000L).toInt() else 0
 
                                     DashboardScreen(
                                         deviceName = device?.displayName ?: "Inverter",
