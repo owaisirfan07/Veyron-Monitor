@@ -29,7 +29,9 @@ class ScheduleReceiver : BroadcastReceiver() {
                     val device = TumcApi.getDevices(auth).firstOrNull()
                     if (device != null) {
                         val value = if (isStart) "2" else "3" // 2 = Solar+Utility, 3 = Solar Only
-                        TumcApi.setParam(auth, device, "PC", value)
+                        // Confirmed via network capture: the real command key
+                        // is "S06" with value "PCP0X", not "PC"/"X".
+                        TumcApi.setParam(auth, device, "S06", "PCP0$value")
                     }
                 }
             } catch (_: Exception) {

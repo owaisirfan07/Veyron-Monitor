@@ -242,7 +242,15 @@ private fun AppRoot() {
         saveParamError = null
         saveSuccessMessage = null
         try {
-            val rawResponse = withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "PC", value) }
+            // CONFIRMED via network capture of the real i.Solar app: the
+            // display shows this setting as "PC" with values 1/2/3, but the
+            // actual command the inverter understands uses a different key
+            // ("S06") and a different value format ("PCP01"/"PCP02"/"PCP03").
+            // Sending {PC: value} (what the read-side key implied) was
+            // accepted by the server as well-formed but silently never
+            // reached the inverter -- this is the real fix.
+            val wireValue = "PCP0$value"
+            withContext(Dispatchers.IO) { TumcApi.setParam(currentAuth, currentDevice, "S06", wireValue) }
 
             // The inverter can take a while to actually apply and report
             // back the change (the real i.Solar app itself only confirms
@@ -257,11 +265,7 @@ private fun AppRoot() {
                 patched.put("PC", if (rest.isNotEmpty()) "$value $rest" else value)
                 params = patched
             }
-            // TEMP diagnostic: show exactly what the server said, since a
-            // "success" HTTP response doesn't always mean the inverter
-            // actually applied it -- this will tell us if there's a hidden
-            // per-command failure hint we're not otherwise seeing.
-            saveSuccessMessage = "Command bheji gayi. Server jawab: ${rawResponse}"
+            saveSuccessMessage = "Command bhej di gayi hai -- inverter ko apply hone mein thodi der lag sakti hai."
 
             delay(20_000L)
             try {
