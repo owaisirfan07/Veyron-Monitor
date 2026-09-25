@@ -145,6 +145,19 @@ private fun AppRoot() {
         val currentAuth = auth ?: return
         val currentDevice = device ?: return
         isRefreshing = true
+
+        // Refresh online/offline status independently of the real-data
+        // fetch below, so a transient hiccup fetching live readings never
+        // freezes the online badge at a stale value.
+        try {
+            val devices = withContext(Dispatchers.IO) { TumcApi.getDevices(currentAuth) }
+            devices.firstOrNull { it.serialNumber == currentDevice.serialNumber }?.let {
+                device = it
+            }
+        } catch (_: Exception) {
+            // non-critical -- keep showing the last known status
+        }
+
         try {
             val fresh = withContext(Dispatchers.IO) {
                 TumcApi.getRealData(currentAuth, currentDevice)
@@ -152,19 +165,6 @@ private fun AppRoot() {
             data = fresh
             lastUpdatedAt = System.currentTimeMillis()
             errorMessage = null
-
-            // Refresh online/offline status for display purposes only --
-            // it no longer gates energy accounting (see below), since the
-            // flag can flap on and off while the house is still genuinely
-            // running on solar/battery the whole time.
-            try {
-                val devices = withContext(Dispatchers.IO) { TumcApi.getDevices(currentAuth) }
-                devices.firstOrNull { it.serialNumber == currentDevice.serialNumber }?.let {
-                    device = it
-                }
-            } catch (_: Exception) {
-                // non-critical -- keep showing the last known status
-            }
 
             // Accumulate energy using the DEVICE'S OWN reported reading time
             // ("currentTime"), not our poll interval or the online flag.
