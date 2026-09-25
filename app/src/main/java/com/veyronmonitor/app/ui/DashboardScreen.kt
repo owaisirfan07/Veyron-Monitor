@@ -166,39 +166,23 @@ fun DashboardScreen(
             val batteryPct = data.numOrNull("batteryCapacity")
             val chargingPower = data.numOrNull("batteryChargingPower") ?: 0.0
             val dischargingPower = data.numOrNull("batteryDischargingPower") ?: 0.0
-            val batteryStatusText = when {
-                chargingPower > 0 -> "Charging (${chargingPower.toInt()} W)"
-                dischargingPower > 0 -> "Discharging (${dischargingPower.toInt()} W)"
-                else -> "Idle"
-            }
 
             ElevatedCard(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                Row(
-                    modifier = Modifier.padding(20.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Icon(
-                            Icons.Filled.BatteryChargingFull,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(40.dp)
-                        )
-                        Column {
-                            Text(
-                                if (batteryPct != null) "${batteryPct.toInt()}%" else "--",
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                batteryStatusText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                Column(modifier = Modifier.padding(vertical = 12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        AssistChip(onClick = {}, label = { Text(workModeLabel(data.optString("workMode", null))) })
                     }
-                    AssistChip(onClick = {}, label = { Text(workModeLabel(data.optString("workMode", null))) })
+                    EnergyFlowDiagram(
+                        solarWatts = data.numOrNull("pvInputPower1") ?: 0.0,
+                        batteryPercent = batteryPct?.toInt(),
+                        batteryChargingWatts = chargingPower,
+                        batteryDischargingWatts = dischargingPower,
+                        gridWatts = data.numOrNull("gridPowerInputActiveTotal") ?: 0.0,
+                        houseWatts = data.numOrNull("acOutputActivePowerTotal") ?: 0.0
+                    )
                 }
             }
 
