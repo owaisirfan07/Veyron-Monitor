@@ -108,9 +108,16 @@ private fun AppRoot() {
 
     // Check GitHub for a newer build once, in the background. Never blocks
     // or interrupts anything -- if it fails or finds nothing newer, it's silent.
+    // If the person already dismissed this exact version's banner before,
+    // don't show it again every time the app is reopened.
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
-            updateInfo = UpdateChecker.checkForUpdate(BuildConfig.VERSION_CODE)
+            val found = UpdateChecker.checkForUpdate(BuildConfig.VERSION_CODE)
+            val dismissedVersion = context.getSharedPreferences("veyron_monitor_prefs", android.content.Context.MODE_PRIVATE)
+                .getInt("dismissed_update_version", 0)
+            if (found != null && found.versionCode > dismissedVersion) {
+                updateInfo = found
+            }
         }
     }
 
@@ -315,7 +322,11 @@ private fun AppRoot() {
         updateInfo?.let { info ->
             UpdateBanner(
                 info = info,
-                onDismiss = { updateInfo = null },
+                onDismiss = {
+                    context.getSharedPreferences("veyron_monitor_prefs", android.content.Context.MODE_PRIVATE)
+                        .edit().putInt("dismissed_update_version", info.versionCode).apply()
+                    updateInfo = null
+                },
                 onUpdate = {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.apkDownloadUrl)))
                 }

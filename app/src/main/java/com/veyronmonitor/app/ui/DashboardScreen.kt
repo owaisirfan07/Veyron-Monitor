@@ -59,6 +59,8 @@ fun DashboardScreen(
     onOpenEnergy: () -> Unit,
     onLogout: () -> Unit
 ) {
+    var showRawData by remember { mutableStateOf(false) }
+
     val (dotColor, statusText) = when (connectionStatus) {
         ConnectionStatus.LIVE -> Color(0xFF22C55E) to "Live"
         ConnectionStatus.RECENT -> Color(0xFFF59E0B) to "Recent (${minutesSinceFresh}m ago)"
@@ -104,18 +106,28 @@ fun DashboardScreen(
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(
+            modifier = Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState())
+        ) {
 
             if (isRefreshing) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
 
-            Text(
-                "Last updated: $lastUpdatedText",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Last updated: $lastUpdatedText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (data != null) {
+                    TextButton(onClick = { showRawData = true }) { Text("Raw Data", style = MaterialTheme.typography.labelSmall) }
+                }
+            }
 
             if (errorMessage != null) {
                 Text(
@@ -209,14 +221,45 @@ fun DashboardScreen(
                 Metric("Max Temp", fmt(data.numOrNull("maxTemperature"), "\u00b0C", 0), Icons.Filled.DeviceThermostat)
             )
 
-            Column(
-                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())
-            ) {
+            Column {
                 MetricSection("Solar (PV)", Icons.Filled.SolarPower, solarMetrics)
                 MetricSection("Battery", Icons.Filled.BatteryChargingFull, batteryMetrics)
                 MetricSection("Grid & Output", Icons.Filled.ElectricalServices, gridMetrics)
                 MetricSection("Temperature", Icons.Filled.Thermostat, tempMetrics)
                 Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+
+    if (showRawData && data != null) {
+        AlertDialog(
+            onDismissRequest = { showRawData = false },
+            title = { Text("Raw Data") },
+            text = {
+                val keys = data.keys().asSequence().sorted().toList()
+                LazyColumnRawData(data, keys)
+            },
+            confirmButton = {
+                TextButton(onClick = { showRawData = false }) { Text("Close") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun LazyColumnRawData(data: JSONObject, keys: List<String>) {
+    androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+        androidx.compose.foundation.lazy.items(keys) { key ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(key, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                Text(
+                    data.opt(key)?.toString() ?: "--",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
