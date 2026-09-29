@@ -6,6 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as lazyColumnItems
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -248,8 +250,8 @@ fun DashboardScreen(
 
 @Composable
 private fun LazyColumnRawData(data: JSONObject, keys: List<String>) {
-    androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
-        androidx.compose.foundation.lazy.items(keys) { key ->
+    LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
+        lazyColumnItems(keys) { key ->
             Row(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
