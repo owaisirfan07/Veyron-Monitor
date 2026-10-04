@@ -28,8 +28,17 @@ import com.veyronmonitor.app.model.AuthState
 import com.veyronmonitor.app.model.ConnectionStatus
 import com.veyronmonitor.app.model.Device
 import com.veyronmonitor.app.ui.DashboardScreen
-import com.veyronmonitor.app.ui.EnergyHistoryScreen
-import com.veyronmonitor.app.ui.EnergyScreen
+import com.veyronmonitor.app.ui.UnitsScreen
+import com.veyronmonitor.app.service.BackupWorker
+import com.veyronmonitor.app.service.MonitorService
+import com.veyronmonitor.app.service.Poller
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.veyronmonitor.app.ui.LoginScreen
 import com.veyronmonitor.app.ui.ScheduleScreen
 import com.veyronmonitor.app.ui.SettingsScreen
@@ -59,9 +68,12 @@ private const val DEVICE_STATUS_EVERY_N_POLLS = 4
 // actually offline. The dongle normally reports every ~5 minutes, so this
 // gives generous slack for a slow/congested WiFi connection without
 // falsely flipping to "offline" the way the cloud's own flag sometimes does.
-private const val STALE_THRESHOLD_MS = 10 * 60_000L
+private const val STALE_THRESHOLD_MS = 20 * 60_000L
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY, HISTORY, SCHEDULE, WARNINGS }
+// A reading younger than this (by the inverter's own clock) counts as "Live".
+private const val LIVE_THRESHOLD_MS = 8 * 60_000L
+
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, SCHEDULE, WARNINGS }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,14 +95,13 @@ private fun AppRoot() {
 
     var auth by remember { mutableStateOf<AuthState?>(null) }
     var device by remember { mutableStateOf<Device?>(null) }
-    var data by remember { mutableStateOf<JSONObject?>(null) }
+    val data by Poller.latest.collectAsState()
     var isLoading by remember { mutableStateOf(false) }
     var isRefreshing by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var lastUpdatedAt by remember { mutableStateOf<Long?>(null) }
-    var pollCount by remember { mutableStateOf(0) }
-    var lastKnownDeviceTime by remember { mutableStateOf(0L) }
-    var lastFreshAt by remember { mutableStateOf(0L) }
+    var clockTick by remember { mutableStateOf(0L) }
+    var statusPolls by remember { mutableStateOf(0) }
 
     var screen by remember { mutableStateOf(Screen.DASHBOARD) }
     var params by remember { mutableStateOf<JSONObject?>(null) }
@@ -100,7 +111,25 @@ private fun AppRoot() {
     var saveParamError by remember { mutableStateOf<String?>(null) }
     var saveSuccessMessage by remember { mutableStateOf<String?>(null) }
 
-    var energyState by remember { mutableStateOf(EnergyStore.load(context)) }
+    remember { EnergyStore.load(context) }
+    val energyState by EnergyStore.state.collectAsState()
+    var tariff by remember { mutableStateOf(EnergyStore.tariff(context)) }
+    var backgroundEnabled by remember { mutableStateOf(MonitorService.isEnabled(context)) }
+    var batteryRestricted by remember { mutableStateOf(!MonitorService.isIgnoringBatteryOptimizations(context)) }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    // Called once we're logged in: share the session with the background
+    // monitor, start it, and ask for notification permission (Android 13+).
+    fun onLoggedIn(a: AuthState, d: Device) {
+        Poller.setSession(a, d)
+        MonitorService.start(context)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            try { notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS) } catch (_: Exception) { }
+        }
+    }
     var schedules by remember { mutableStateOf(ScheduleStore.getAll(context)) }
     var hasUnreadWarnings by remember { mutableStateOf(WarningLogStore.hasUnread(context)) }
 
@@ -140,6 +169,7 @@ private fun AppRoot() {
                 CredentialStore.save(context, username, password)
                 auth = authResult
                 device = devices.first()
+                onLoggedIn(authResult, devices.first())
             } catch (e: Exception) {
                 errorMessage = "Login fail hua: ${e.message ?: "network error"}"
             } finally {
@@ -156,7 +186,7 @@ private fun AppRoot() {
         // Refresh online/offline status independently of the real-data
         // fetch below, so a transient hiccup fetching live readings never
         // freezes the online badge at a stale value.
-        try {
+        if (statusPolls++ % DEVICE_STATUS_EVERY_N_POLLS == 0) try {
             val devices = withContext(Dispatchers.IO) { TumcApi.getDevices(currentAuth) }
             devices.firstOrNull { it.serialNumber == currentDevice.serialNumber }?.let {
                 device = it
@@ -166,60 +196,11 @@ private fun AppRoot() {
         }
 
         try {
-            val fresh = withContext(Dispatchers.IO) {
-                TumcApi.getRealData(currentAuth, currentDevice)
-            }
-            data = fresh
+            // Same shared routine the background service uses: fetches the
+            // reading, counts its units (once only) and logs warnings.
+            withContext(Dispatchers.IO) { Poller.fetchOnceLocked(context) }
             lastUpdatedAt = System.currentTimeMillis()
             errorMessage = null
-
-            // Accumulate energy using the DEVICE'S OWN reported reading time
-            // ("currentTime"), not our poll interval or the online flag.
-            // This way: (1) a genuinely fresh reading always counts, even if
-            // the app briefly shows "offline"; (2) a repeated/stale reading
-            // (same timestamp as last time) is never double-counted.
-            val deviceTimeMillis = try {
-                SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-                    .parse(fresh.optString("currentTime", ""))?.time ?: 0L
-            } catch (_: Exception) { 0L }
-
-            if (deviceTimeMillis > 0L) {
-                if (deviceTimeMillis != lastKnownDeviceTime) {
-                    lastKnownDeviceTime = deviceTimeMillis
-                    lastFreshAt = System.currentTimeMillis()
-                }
-                when {
-                    energyState.lastDeviceTimestampMillis == 0L -> {
-                        // First sample ever -- just record the baseline.
-                        energyState = energyState.copy(lastDeviceTimestampMillis = deviceTimeMillis)
-                        EnergyStore.save(context, energyState)
-                    }
-                    deviceTimeMillis > energyState.lastDeviceTimestampMillis -> {
-                        // Genuinely new reading -- integrate over the actual
-                        // device-reported gap (capped at 30 min as a sanity limit).
-                        val elapsedHours = (deviceTimeMillis - energyState.lastDeviceTimestampMillis)
-                            .coerceAtMost(30 * 60_000L) / 3_600_000.0
-                        val solarWatts = fresh.optDouble("pvInputPower1", 0.0).takeIf { !it.isNaN() } ?: 0.0
-                        val gridWatts = fresh.optDouble("gridPowerInputActiveTotal", 0.0).takeIf { !it.isNaN() } ?: 0.0
-                        energyState = EnergyStore.addSample(context, energyState, solarWatts, gridWatts, elapsedHours)
-                            .copy(lastDeviceTimestampMillis = deviceTimeMillis)
-                        EnergyStore.save(context, energyState)
-                    }
-                    else -> {
-                        // Same (or older) timestamp as last time -- stale/repeated
-                        // reading, e.g. while reporting is briefly interrupted.
-                        // Skip it entirely so it isn't counted twice.
-                    }
-                }
-            }
-
-            // Log any newly-appeared warning/fault codes for the Warnings tab.
-            val warningArr = fresh.optJSONArray("warning")
-            val warningCodes = if (warningArr != null) {
-                (0 until warningArr.length()).map { warningArr.optString(it) }
-            } else emptyList()
-            val faultCode = fresh.opt("fault1")?.toString()
-            WarningLogStore.recordActiveCodes(context, warningCodes, faultCode)
             hasUnreadWarnings = WarningLogStore.hasUnread(context)
         } catch (e: Exception) {
             errorMessage = "Update fail: ${e.message ?: "network error"}"
@@ -299,6 +280,7 @@ private fun AppRoot() {
                 if (devices.isNotEmpty()) {
                     auth = authResult
                     device = devices.first()
+                    onLoggedIn(authResult, devices.first())
                 }
             } catch (_: Exception) {
                 // silent fail -> fall back to manual login screen
@@ -308,12 +290,18 @@ private fun AppRoot() {
         }
     }
 
-    // Poll loop while logged in.
+    // Poll loop while logged in AND the app is on screen (the background
+    // service takes over counting when the app is closed).
     LaunchedEffect(auth, device?.serialNumber) {
         if (auth != null && device != null) {
-            while (true) {
-                refreshData()
-                delay(REFRESH_INTERVAL_MS)
+            lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                batteryRestricted = !MonitorService.isIgnoringBatteryOptimizations(context)
+                EnergyStore.load(context) // rolls the day over if midnight passed
+                while (true) {
+                    refreshData()
+                    clockTick = System.currentTimeMillis()
+                    delay(REFRESH_INTERVAL_MS)
+                }
             }
         }
     }
@@ -340,12 +328,6 @@ private fun AppRoot() {
                         isLoading = isLoading,
                         errorMessage = errorMessage,
                         onLogin = ::attemptLogin
-                    )
-                }
-                screen == Screen.HISTORY -> {
-                    EnergyHistoryScreen(
-                        records = EnergyStore.getHistory(context, energyState),
-                        onBack = { screen = Screen.ENERGY }
                     )
                 }
                 screen == Screen.SCHEDULE -> {
@@ -385,14 +367,14 @@ private fun AppRoot() {
                                 NavigationBarItem(
                                     selected = screen == Screen.DASHBOARD,
                                     onClick = { screen = Screen.DASHBOARD },
-                                    icon = { Icon(Icons.Filled.Dashboard, contentDescription = "Dashboard") },
-                                    label = { Text("Dashboard") }
+                                    icon = { Icon(Icons.Filled.Bolt, contentDescription = "Live") },
+                                    label = { Text("Live") }
                                 )
                                 NavigationBarItem(
                                     selected = screen == Screen.ENERGY,
                                     onClick = { screen = Screen.ENERGY },
-                                    icon = { Icon(Icons.Filled.QueryStats, contentDescription = "Energy") },
-                                    label = { Text("Energy") }
+                                    icon = { Icon(Icons.Filled.BarChart, contentDescription = "Units") },
+                                    label = { Text("Units") }
                                 )
                                 NavigationBarItem(
                                     selected = screen == Screen.WARNINGS,
@@ -422,15 +404,33 @@ private fun AppRoot() {
                     ) { innerPadding ->
                         Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
                             when (screen) {
-                                Screen.ENERGY -> EnergyScreen(
-                                    solarWh = energyState.solarWh,
-                                    gridWh = energyState.gridWh,
-                                    solarSince = energyState.solarSince,
-                                    gridSince = energyState.gridSince,
-                                    onBack = { screen = Screen.DASHBOARD },
-                                    onResetSolar = { energyState = EnergyStore.resetSolar(context, energyState) },
-                                    onResetGrid = { energyState = EnergyStore.resetGrid(context, energyState) },
-                                    onViewHistory = { screen = Screen.HISTORY }
+                                Screen.ENERGY -> UnitsScreen(
+                                    energy = energyState,
+                                    history = remember(energyState) { EnergyStore.getHistory(context) },
+                                    sampleDays = remember(energyState.dayKey) { EnergyStore.sampleDays(context) },
+                                    samplesFor = { EnergyStore.getSamples(context, it) },
+                                    tariff = tariff,
+                                    onTariffChange = { EnergyStore.setTariff(context, it); tariff = it },
+                                    backgroundEnabled = backgroundEnabled,
+                                    onBackgroundToggle = {
+                                        backgroundEnabled = it
+                                        MonitorService.setEnabled(context, it)
+                                        if (!it) BackupWorker.cancel(context)
+                                    },
+                                    batteryRestricted = batteryRestricted,
+                                    onFixBattery = {
+                                        try {
+                                            context.startActivity(
+                                                Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                                    .setData(Uri.parse("package:${context.packageName}"))
+                                            )
+                                        } catch (_: Exception) {
+                                            context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        }
+                                    },
+                                    onResetSolar = { EnergyStore.resetSolar(context) },
+                                    onResetGrid = { EnergyStore.resetGrid(context) },
+                                    onResetLoad = { EnergyStore.resetLoad(context) }
                                 )
                                 Screen.WARNINGS -> WarningsScreen(
                                     entries = WarningLogStore.getLog(context)
@@ -454,14 +454,17 @@ private fun AppRoot() {
                                         SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(it))
                                     } ?: "--"
 
-                                    val msSinceFresh = if (lastFreshAt > 0L) System.currentTimeMillis() - lastFreshAt else Long.MAX_VALUE
+                                    // How old is the newest reading, by the inverter's own clock?
+                                    @Suppress("UNUSED_VARIABLE") val tick = clockTick
+                                    val readingAt = data?.let { EnergyStore.readingTime(it) } ?: 0L
+                                    val msSinceFresh = if (readingAt > 0L) (System.currentTimeMillis() - readingAt).coerceAtLeast(0L) else Long.MAX_VALUE
                                     val serverSaysOnline = device?.isOnline ?: false
                                     val connectionStatus = when {
-                                        msSinceFresh < 60_000L -> ConnectionStatus.LIVE
+                                        msSinceFresh < LIVE_THRESHOLD_MS -> ConnectionStatus.LIVE
                                         serverSaysOnline || msSinceFresh < STALE_THRESHOLD_MS -> ConnectionStatus.RECENT
                                         else -> ConnectionStatus.OFFLINE
                                     }
-                                    val minutesSinceFresh = if (lastFreshAt > 0L) (msSinceFresh / 60_000L).toInt() else 0
+                                    val minutesSinceFresh = if (readingAt > 0L) (msSinceFresh / 60_000L).toInt() else 0
 
                                     DashboardScreen(
                                         deviceName = device?.displayName ?: "Inverter",
@@ -471,17 +474,18 @@ private fun AppRoot() {
                                         lastUpdatedText = lastUpdatedText,
                                         isRefreshing = isRefreshing,
                                         errorMessage = errorMessage,
+                                        todaySolarWh = energyState.daySolarWh,
+                                        todayGridWh = energyState.dayGridWh,
+                                        todayLoadWh = energyState.dayLoadWh,
                                         onRefresh = { scope.launch { refreshData() } },
-                                        onOpenSettings = {
-                                            screen = Screen.SETTINGS
-                                            scope.launch { loadParams() }
-                                        },
-                                        onOpenEnergy = { screen = Screen.ENERGY },
+                                        onOpenUnits = { screen = Screen.ENERGY },
                                         onLogout = {
+                                            MonitorService.stop(context)
+                                            BackupWorker.cancel(context)
                                             CredentialStore.clear(context)
+                                            Poller.clear()
                                             auth = null
                                             device = null
-                                            data = null
                                         }
                                     )
                                 }

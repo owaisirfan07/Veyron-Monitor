@@ -1,158 +1,359 @@
 package com.veyronmonitor.app.data
 
 import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Locale
 
 /**
- * Stores running energy totals (in watt-hours) that the app itself
- * accumulates by integrating live power readings over time, since the
- * inverter's cloud data doesn't expose a ready-made "units generated" /
- * "units consumed" figure. Each lifetime counter can be reset
- * independently, like the reset button on a voltage-protector style
- * energy meter. A separate day-by-day history log is kept automatically
- * (not affected by manual resets) so you can see each day's totals.
+ * The app's own "electricity meter".
+ *
+ * The i.Solar cloud only gives LIVE power (watts), never a "units today"
+ * total, so the app builds the units itself: every time the dongle sends a
+ * NEW reading, the energy since the previous reading is added
+ * (trapezoid rule: average of the two power values x the time between them).
+ *
+ *   1 unit = 1 kWh = 1000 W running for 1 hour   (same as the KE meter)
+ *
+ * Readings are fed in from three places - the open app, the background
+ * monitor service and a WorkManager backup job - so everything goes through
+ * [process], which is synchronised and ignores a reading it has already
+ * counted (same device timestamp). That way nothing is counted twice.
+ *
+ * If there is a gap longer than [MAX_GAP_MS] between two readings (phone
+ * off, no internet, dongle offline) the energy in that gap is NOT guessed;
+ * the gap is recorded as "missed minutes" so the screen can show how
+ * complete today's number is.
  */
 object EnergyStore {
     private const val PREFS = "veyron_monitor_energy"
+    private const val SAMPLE_PREFS = "veyron_monitor_samples"
+    private const val MAX_HISTORY_DAYS = 400
+    private const val SAMPLE_DAYS_KEPT = 8
+    const val MAX_GAP_MS = 25 * 60_000L
 
-    private const val KEY_SOLAR_WH = "solar_wh"
-    private const val KEY_GRID_WH = "grid_wh"
-    private const val KEY_SOLAR_SINCE = "solar_since"
-    private const val KEY_GRID_SINCE = "grid_since"
-    private const val KEY_LAST_SAMPLE_AT = "last_sample_at"
-    private const val KEY_LAST_DEVICE_TS = "last_device_ts"
+    // v2 keys (Double stored as raw Long bits for full precision)
+    private const val K_VERSION = "v2_ready"
+    private const val K_SOLAR = "v2_solar_wh"
+    private const val K_GRID = "v2_grid_wh"
+    private const val K_LOAD = "v2_load_wh"
+    private const val K_SOLAR_SINCE = "solar_since"
+    private const val K_GRID_SINCE = "grid_since"
+    private const val K_LOAD_SINCE = "v2_load_since"
+    private const val K_LAST_TS = "v2_last_ts"
+    private const val K_LAST_SOLAR_W = "v2_last_solar_w"
+    private const val K_LAST_GRID_W = "v2_last_grid_w"
+    private const val K_LAST_LOAD_W = "v2_last_load_w"
+    private const val K_LAST_SEEN_AT = "v2_last_seen_at"
+    private const val K_DAY = "v2_day"
+    private const val K_DAY_SOLAR = "v2_day_solar_wh"
+    private const val K_DAY_GRID = "v2_day_grid_wh"
+    private const val K_DAY_LOAD = "v2_day_load_wh"
+    private const val K_DAY_MISSED = "v2_day_missed_min"
+    private const val K_DAY_PEAK_W = "v2_day_peak_w"
+    private const val K_DAY_PEAK_AT = "v2_day_peak_at"
+    private const val K_HISTORY = "history_json"
+    private const val K_TARIFF = "tariff_rs"
 
-    private const val KEY_DAY_KEY = "current_day_key"
-    private const val KEY_DAY_SOLAR_WH = "current_day_solar_wh"
-    private const val KEY_DAY_GRID_WH = "current_day_grid_wh"
-    private const val KEY_HISTORY_JSON = "history_json"
-    private const val MAX_HISTORY_DAYS = 60
+    // old (v1) keys - only read once for migration
+    private const val OLD_SOLAR = "solar_wh"
+    private const val OLD_GRID = "grid_wh"
+    private const val OLD_DAY_KEY = "current_day_key"
+    private const val OLD_DAY_SOLAR = "current_day_solar_wh"
+    private const val OLD_DAY_GRID = "current_day_grid_wh"
 
-    private val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    private val dayFormat get() = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    private val tsFormat get() = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 
     data class EnergyState(
-        val solarWh: Double,
-        val gridWh: Double,
-        val solarSince: Long,
-        val gridSince: Long,
-        val lastSampleAt: Long,
-        val lastDeviceTimestampMillis: Long,
-        val currentDayKey: String,
-        val currentDaySolarWh: Double,
-        val currentDayGridWh: Double
+        val solarWh: Double = 0.0,
+        val gridWh: Double = 0.0,
+        val loadWh: Double = 0.0,
+        val solarSince: Long = 0L,
+        val gridSince: Long = 0L,
+        val loadSince: Long = 0L,
+        val lastReadingTs: Long = 0L,
+        val lastSolarW: Double = 0.0,
+        val lastGridW: Double = 0.0,
+        val lastLoadW: Double = 0.0,
+        val lastSeenAt: Long = 0L,
+        val dayKey: String = "",
+        val daySolarWh: Double = 0.0,
+        val dayGridWh: Double = 0.0,
+        val dayLoadWh: Double = 0.0,
+        val dayMissedMin: Int = 0,
+        val dayPeakSolarW: Double = 0.0,
+        val dayPeakAt: Long = 0L
     )
 
-    data class DayRecord(val dateKey: String, val solarWh: Double, val gridWh: Double)
+    data class DayRecord(
+        val dateKey: String,
+        val solarWh: Double,
+        val gridWh: Double,
+        val loadWh: Double = 0.0,
+        val missedMin: Int = 0,
+        val peakSolarW: Double = 0.0
+    )
+
+    /** One point of a day's power curve. */
+    data class Sample(val minuteOfDay: Int, val solarW: Float, val gridW: Float, val loadW: Float, val batteryPct: Float)
+
+    private val lock = Any()
+    private val _state = MutableStateFlow(EnergyState())
+    val state: StateFlow<EnergyState> = _state.asStateFlow()
+    @Volatile private var loaded = false
+
+    private fun prefs(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun samplePrefs(c: Context) = c.getSharedPreferences(SAMPLE_PREFS, Context.MODE_PRIVATE)
+
+    private fun SharedPreferences.getD(k: String) = Double.fromBits(getLong(k, 0.0.toRawBits()))
+    private fun SharedPreferences.Editor.putD(k: String, v: Double) = putLong(k, v.toRawBits())
 
     fun todayKey(): String = dayFormat.format(System.currentTimeMillis())
 
-    fun load(context: Context): EnergyState {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    /** Loads state into memory (once) and returns it. */
+    fun load(context: Context): EnergyState = synchronized(lock) {
+        if (!loaded) {
+            migrateIfNeeded(context)
+            _state.value = readPrefs(context)
+            loaded = true
+        }
+        rollDayIfNeeded(context, todayKey())
+        _state.value
+    }
+
+    private fun readPrefs(context: Context): EnergyState {
+        val p = prefs(context)
         val now = System.currentTimeMillis()
         return EnergyState(
-            solarWh = prefs.getFloat(KEY_SOLAR_WH, 0f).toDouble(),
-            gridWh = prefs.getFloat(KEY_GRID_WH, 0f).toDouble(),
-            solarSince = prefs.getLong(KEY_SOLAR_SINCE, now),
-            gridSince = prefs.getLong(KEY_GRID_SINCE, now),
-            lastSampleAt = prefs.getLong(KEY_LAST_SAMPLE_AT, 0L),
-            lastDeviceTimestampMillis = prefs.getLong(KEY_LAST_DEVICE_TS, 0L),
-            currentDayKey = prefs.getString(KEY_DAY_KEY, todayKey()) ?: todayKey(),
-            currentDaySolarWh = prefs.getFloat(KEY_DAY_SOLAR_WH, 0f).toDouble(),
-            currentDayGridWh = prefs.getFloat(KEY_DAY_GRID_WH, 0f).toDouble()
+            solarWh = p.getD(K_SOLAR),
+            gridWh = p.getD(K_GRID),
+            loadWh = p.getD(K_LOAD),
+            solarSince = p.getLong(K_SOLAR_SINCE, now),
+            gridSince = p.getLong(K_GRID_SINCE, now),
+            loadSince = p.getLong(K_LOAD_SINCE, now),
+            lastReadingTs = p.getLong(K_LAST_TS, 0L),
+            lastSolarW = p.getD(K_LAST_SOLAR_W),
+            lastGridW = p.getD(K_LAST_GRID_W),
+            lastLoadW = p.getD(K_LAST_LOAD_W),
+            lastSeenAt = p.getLong(K_LAST_SEEN_AT, 0L),
+            dayKey = p.getString(K_DAY, null) ?: todayKey(),
+            daySolarWh = p.getD(K_DAY_SOLAR),
+            dayGridWh = p.getD(K_DAY_GRID),
+            dayLoadWh = p.getD(K_DAY_LOAD),
+            dayMissedMin = p.getInt(K_DAY_MISSED, 0),
+            dayPeakSolarW = p.getD(K_DAY_PEAK_W),
+            dayPeakAt = p.getLong(K_DAY_PEAK_AT, 0L)
         )
     }
 
-    fun save(context: Context, state: EnergyState) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putFloat(KEY_SOLAR_WH, state.solarWh.toFloat())
-            .putFloat(KEY_GRID_WH, state.gridWh.toFloat())
-            .putLong(KEY_SOLAR_SINCE, state.solarSince)
-            .putLong(KEY_GRID_SINCE, state.gridSince)
-            .putLong(KEY_LAST_SAMPLE_AT, state.lastSampleAt)
-            .putLong(KEY_LAST_DEVICE_TS, state.lastDeviceTimestampMillis)
-            .putString(KEY_DAY_KEY, state.currentDayKey)
-            .putFloat(KEY_DAY_SOLAR_WH, state.currentDaySolarWh.toFloat())
-            .putFloat(KEY_DAY_GRID_WH, state.currentDayGridWh.toFloat())
+    private fun write(context: Context, s: EnergyState) {
+        prefs(context).edit()
+            .putD(K_SOLAR, s.solarWh).putD(K_GRID, s.gridWh).putD(K_LOAD, s.loadWh)
+            .putLong(K_SOLAR_SINCE, s.solarSince).putLong(K_GRID_SINCE, s.gridSince).putLong(K_LOAD_SINCE, s.loadSince)
+            .putLong(K_LAST_TS, s.lastReadingTs)
+            .putD(K_LAST_SOLAR_W, s.lastSolarW).putD(K_LAST_GRID_W, s.lastGridW).putD(K_LAST_LOAD_W, s.lastLoadW)
+            .putLong(K_LAST_SEEN_AT, s.lastSeenAt)
+            .putString(K_DAY, s.dayKey)
+            .putD(K_DAY_SOLAR, s.daySolarWh).putD(K_DAY_GRID, s.dayGridWh).putD(K_DAY_LOAD, s.dayLoadWh)
+            .putInt(K_DAY_MISSED, s.dayMissedMin)
+            .putD(K_DAY_PEAK_W, s.dayPeakSolarW).putLong(K_DAY_PEAK_AT, s.dayPeakAt)
             .apply()
-    }
-
-    fun resetSolar(context: Context, current: EnergyState): EnergyState {
-        val updated = current.copy(solarWh = 0.0, solarSince = System.currentTimeMillis())
-        save(context, updated)
-        return updated
-    }
-
-    fun resetGrid(context: Context, current: EnergyState): EnergyState {
-        val updated = current.copy(gridWh = 0.0, gridSince = System.currentTimeMillis())
-        save(context, updated)
-        return updated
+        _state.value = s
     }
 
     /**
-     * Adds one sample's worth of energy (watts * hours) to both the
-     * lifetime totals and today's running total. If the calendar day has
-     * changed since the last sample, yesterday's totals are archived into
-     * the history log first and today's counter starts fresh at zero.
+     * Old versions counted in Float with the +3h "currentTime" clock.
+     * Keep the lifetime totals and day history, but start the reading
+     * clock fresh (otherwise new readings would look 3 hours "older").
      */
-    fun addSample(context: Context, current: EnergyState, solarWatts: Double, gridWatts: Double, elapsedHours: Double): EnergyState {
-        val key = todayKey()
-        var state = current
-
-        if (state.currentDayKey != key) {
-            // Day rolled over -- archive the completed day, then reset today's counters.
-            appendHistory(context, DayRecord(state.currentDayKey, state.currentDaySolarWh, state.currentDayGridWh))
-            state = state.copy(currentDayKey = key, currentDaySolarWh = 0.0, currentDayGridWh = 0.0)
+    private fun migrateIfNeeded(context: Context) {
+        val p = prefs(context)
+        if (p.getBoolean(K_VERSION, false)) return
+        val e = p.edit()
+        e.putD(K_SOLAR, p.getFloat(OLD_SOLAR, 0f).toDouble())
+        e.putD(K_GRID, p.getFloat(OLD_GRID, 0f).toDouble())
+        e.putLong(K_LOAD_SINCE, System.currentTimeMillis())
+        val oldDay = p.getString(OLD_DAY_KEY, null)
+        if (oldDay != null) {
+            e.putString(K_DAY, oldDay)
+            e.putD(K_DAY_SOLAR, p.getFloat(OLD_DAY_SOLAR, 0f).toDouble())
+            e.putD(K_DAY_GRID, p.getFloat(OLD_DAY_GRID, 0f).toDouble())
         }
-
-        val solarWh = solarWatts * elapsedHours
-        val gridWh = gridWatts * elapsedHours
-        state = state.copy(
-            solarWh = state.solarWh + solarWh,
-            gridWh = state.gridWh + gridWh,
-            currentDaySolarWh = state.currentDaySolarWh + solarWh,
-            currentDayGridWh = state.currentDayGridWh + gridWh
-        )
-        save(context, state)
-        return state
+        e.putBoolean(K_VERSION, true).apply()
     }
 
-    private fun appendHistory(context: Context, record: DayRecord) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val arr = try {
-            JSONArray(prefs.getString(KEY_HISTORY_JSON, "[]"))
-        } catch (_: Exception) {
-            JSONArray()
+    /** Parses the reading's own local time ("createTime"); falls back to "currentTime". */
+    fun readingTime(json: JSONObject): Long {
+        for (key in listOf("createTime", "currentTime")) {
+            val raw = json.optString(key, "")
+            if (raw.isNotBlank() && raw != "null") {
+                try {
+                    tsFormat.parse(raw)?.time?.let { return it }
+                } catch (_: Exception) { }
+            }
         }
-        val entry = JSONObject()
-            .put("date", record.dateKey)
-            .put("solarWh", record.solarWh)
-            .put("gridWh", record.gridWh)
-        arr.put(entry)
-
-        // Keep only the most recent MAX_HISTORY_DAYS entries.
-        val trimmed = if (arr.length() > MAX_HISTORY_DAYS) {
-            JSONArray((arr.length() - MAX_HISTORY_DAYS until arr.length()).map { arr.getJSONObject(it) })
-        } else arr
-
-        prefs.edit().putString(KEY_HISTORY_JSON, trimmed.toString()).apply()
+        return 0L
     }
 
-    /** Full history, newest first, including today-so-far as the first entry. */
-    fun getHistory(context: Context, state: EnergyState): List<DayRecord> {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val arr = try {
-            JSONArray(prefs.getString(KEY_HISTORY_JSON, "[]"))
-        } catch (_: Exception) {
-            JSONArray()
+    private fun JSONObject.watts(key: String): Double {
+        if (!has(key) || isNull(key)) return 0.0
+        val v = optDouble(key, 0.0)
+        return if (v.isNaN() || v < 0) 0.0 else v
+    }
+
+    /**
+     * Feed one cloud reading in. Returns true if it was a NEW reading and
+     * was counted, false if it was a repeat of one already seen.
+     */
+    fun process(context: Context, json: JSONObject): Boolean = synchronized(lock) {
+        load(context)
+        val ts = readingTime(json)
+        if (ts <= 0L) return false
+        var s = _state.value
+        val solar = json.watts("pvInputPower1") + json.watts("pvInputPower2")
+        val grid = json.watts("gridPowerInputActiveTotal")
+        val load = json.watts("acOutputActivePowerTotal")
+        val battery = json.watts("batteryCapacity")
+
+        if (ts == s.lastReadingTs) return false
+        // Older than what we have: a repeat. Only accept it if the clock
+        // jumped back a lot (dongle reset) - then start a new baseline.
+        if (ts < s.lastReadingTs && s.lastReadingTs - ts < 6 * 3_600_000L) return false
+
+        val readingDay = dayFormat.format(ts)
+        s = rollDayIfNeeded(context, readingDay)
+
+        if (s.lastReadingTs > 0L && ts > s.lastReadingTs) {
+            val gapMs = ts - s.lastReadingTs
+            if (gapMs <= MAX_GAP_MS) {
+                val h = gapMs / 3_600_000.0
+                val solarWh = (s.lastSolarW + solar) / 2.0 * h
+                val gridWh = (s.lastGridW + grid) / 2.0 * h
+                val loadWh = (s.lastLoadW + load) / 2.0 * h
+                s = s.copy(
+                    solarWh = s.solarWh + solarWh, gridWh = s.gridWh + gridWh, loadWh = s.loadWh + loadWh,
+                    daySolarWh = s.daySolarWh + solarWh, dayGridWh = s.dayGridWh + gridWh, dayLoadWh = s.dayLoadWh + loadWh
+                )
+            } else if (dayFormat.format(s.lastReadingTs) == readingDay) {
+                // Only count the missing part that belongs to today.
+                val missed = ((gapMs - 5 * 60_000L) / 60_000L).toInt().coerceAtLeast(0)
+                s = s.copy(dayMissedMin = s.dayMissedMin + missed)
+            } else {
+                // Gap crossed midnight: missing time today = since 00:00.
+                s = s.copy(dayMissedMin = s.dayMissedMin + (minuteOfDay(ts) - 5).coerceAtLeast(0))
+            }
+        } else if (s.lastReadingTs == 0L && s.daySolarWh == 0.0 && s.dayGridWh == 0.0) {
+            // Very first reading ever / after reinstall - nothing before it is known today.
+            s = s.copy(dayMissedMin = (minuteOfDay(ts) - 5).coerceAtLeast(0))
         }
+
+        if (solar > s.dayPeakSolarW) s = s.copy(dayPeakSolarW = solar, dayPeakAt = ts)
+        s = s.copy(lastReadingTs = ts, lastSolarW = solar, lastGridW = grid, lastLoadW = load,
+            lastSeenAt = System.currentTimeMillis())
+        write(context, s)
+        appendSample(context, readingDay, Sample(minuteOfDay(ts), solar.toFloat(), grid.toFloat(), load.toFloat(), battery.toFloat()))
+        true
+    }
+
+    private fun minuteOfDay(ts: Long): Int {
+        val c = Calendar.getInstance().apply { timeInMillis = ts }
+        return c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE)
+    }
+
+    /** Archives the finished day when the date changes and starts today's counter at zero. */
+    private fun rollDayIfNeeded(context: Context, newDay: String): EnergyState {
+        var s = _state.value
+        if (s.dayKey.isEmpty()) {
+            s = s.copy(dayKey = newDay); write(context, s); return s
+        }
+        if (newDay > s.dayKey) {
+            appendHistory(context, DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW))
+            s = s.copy(dayKey = newDay, daySolarWh = 0.0, dayGridWh = 0.0, dayLoadWh = 0.0,
+                dayMissedMin = 0, dayPeakSolarW = 0.0, dayPeakAt = 0L)
+            write(context, s)
+        }
+        return s
+    }
+
+    private fun readHistoryArray(context: Context): JSONArray = try {
+        JSONArray(prefs(context).getString(K_HISTORY, "[]"))
+    } catch (_: Exception) { JSONArray() }
+
+    private fun appendHistory(context: Context, r: DayRecord) {
+        val arr = readHistoryArray(context)
+        val list = (0 until arr.length()).map { arr.getJSONObject(it) }
+            .filter { it.optString("date") != r.dateKey }
+            .toMutableList()
+        list.add(JSONObject().put("date", r.dateKey).put("solarWh", r.solarWh).put("gridWh", r.gridWh)
+            .put("loadWh", r.loadWh).put("missedMin", r.missedMin).put("peakW", r.peakSolarW))
+        val trimmed = list.sortedBy { it.optString("date") }.takeLast(MAX_HISTORY_DAYS)
+        prefs(context).edit().putString(K_HISTORY, JSONArray(trimmed).toString()).apply()
+    }
+
+    /** Every day, newest first, with today (so far) as the first entry. */
+    fun getHistory(context: Context): List<DayRecord> {
+        val s = load(context)
+        val arr = readHistoryArray(context)
         val past = (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
-            DayRecord(o.getString("date"), o.optDouble("solarWh", 0.0), o.optDouble("gridWh", 0.0))
-        }
-        val today = DayRecord(state.currentDayKey, state.currentDaySolarWh, state.currentDayGridWh)
+            DayRecord(o.getString("date"), o.optDouble("solarWh", 0.0), o.optDouble("gridWh", 0.0),
+                o.optDouble("loadWh", 0.0), o.optInt("missedMin", 0), o.optDouble("peakW", 0.0))
+        }.filter { it.dateKey != s.dayKey }
+        val today = DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW)
         return (past + today).sortedByDescending { it.dateKey }
+    }
+
+    // ---------- power curve samples (per day, last few days) ----------
+
+    private fun appendSample(context: Context, day: String, sm: Sample) {
+        val sp = samplePrefs(context)
+        val line = "${sm.minuteOfDay},${sm.solarW.toInt()},${sm.gridW.toInt()},${sm.loadW.toInt()},${sm.batteryPct.toInt()}"
+        val existing = sp.getString(day, "") ?: ""
+        val e = sp.edit().putString(day, if (existing.isEmpty()) line else "$existing;$line")
+        // keep only the most recent days
+        val days = (sp.all.keys + day).distinct().sorted()
+        if (days.size > SAMPLE_DAYS_KEPT) days.take(days.size - SAMPLE_DAYS_KEPT).forEach { e.remove(it) }
+        e.apply()
+    }
+
+    fun getSamples(context: Context, day: String): List<Sample> {
+        val raw = samplePrefs(context).getString(day, "") ?: ""
+        if (raw.isEmpty()) return emptyList()
+        return raw.split(';').mapNotNull { part ->
+            val f = part.split(',')
+            if (f.size < 5) null else try {
+                Sample(f[0].toInt(), f[1].toFloat(), f[2].toFloat(), f[3].toFloat(), f[4].toFloat())
+            } catch (_: Exception) { null }
+        }.sortedBy { it.minuteOfDay }
+    }
+
+    fun sampleDays(context: Context): List<String> =
+        samplePrefs(context).all.keys.sorted()
+
+    // ---------- resets & settings ----------
+
+    fun resetSolar(context: Context) = synchronized(lock) {
+        load(context); write(context, _state.value.copy(solarWh = 0.0, solarSince = System.currentTimeMillis()))
+    }
+
+    fun resetGrid(context: Context) = synchronized(lock) {
+        load(context); write(context, _state.value.copy(gridWh = 0.0, gridSince = System.currentTimeMillis()))
+    }
+
+    fun resetLoad(context: Context) = synchronized(lock) {
+        load(context); write(context, _state.value.copy(loadWh = 0.0, loadSince = System.currentTimeMillis()))
+    }
+
+    /** Rupees per unit, used for the "bachat" (savings) estimate. */
+    fun tariff(context: Context): Double = prefs(context).getFloat(K_TARIFF, 50f).toDouble()
+    fun setTariff(context: Context, rs: Double) {
+        prefs(context).edit().putFloat(K_TARIFF, rs.toFloat()).apply()
     }
 }
