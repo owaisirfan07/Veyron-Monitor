@@ -42,6 +42,10 @@
         </service>
 
         <receiver
+            android:name=".schedule.MeterReminderReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".schedule.BootReceiver"
             android:exported="false">
             <intent-filter>

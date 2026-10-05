@@ -171,3 +171,48 @@ fun DailyBarsChart(
         }
     }
 }
+
+/** Single-series bars for estimated daily units (drawn lighter, since they are an estimate). */
+@Composable
+fun EstimateBarsChart(
+    values: List<Double>,
+    labels: List<String>,
+    color: Color,
+    axisColor: Color,
+    gridLineColor: Color,
+    highlightIndex: Int = -1,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier.fillMaxWidth().height(170.dp)) {
+        val leftPad = 30.dp.toPx()
+        val bottomPad = 22.dp.toPx()
+        val topPad = 8.dp.toPx()
+        val w = size.width - leftPad
+        val h = size.height - bottomPad - topPad
+        val textPx = 10.dp.toPx()
+        val top = niceTop(max(values.maxOrNull()?.toFloat() ?: 0f, 1f))
+        for (i in 0..4) {
+            val y = topPad + h - h * i / 4f
+            drawLine(gridLineColor, Offset(leftPad, y), Offset(size.width, y), strokeWidth = 1f,
+                pathEffect = if (i == 0) null else PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
+            val v = top * i / 4f
+            label(if (v % 1f == 0f) "${v.toInt()}" else "%.1f".format(v), leftPad - 6.dp.toPx(), y + textPx / 3,
+                axisColor, textPx, android.graphics.Paint.Align.RIGHT)
+        }
+        if (values.isEmpty()) return@Canvas
+        val slot = w / values.size
+        val barW = (slot * 0.62f).coerceAtMost(16.dp.toPx())
+        val labelEvery = ceil(values.size / 8f).toInt().coerceAtLeast(1)
+        values.forEachIndexed { i, v ->
+            val cx = leftPad + slot * i + slot / 2
+            val bh = h * (v.toFloat() / top).coerceIn(0f, 1f)
+            if (bh > 0f) drawRoundRect(
+                if (i == highlightIndex) color else color.copy(alpha = 0.45f),
+                Offset(cx - barW / 2, topPad + h - bh), Size(barW, bh), CornerRadius(barW / 4, barW / 4)
+            )
+            if ((values.size - 1 - i) % labelEvery == 0) {
+                label(labels.getOrElse(i) { "" }, cx, size.height - 4.dp.toPx(), axisColor, textPx, android.graphics.Paint.Align.CENTER)
+            }
+        }
+    }
+}

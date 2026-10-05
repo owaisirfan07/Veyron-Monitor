@@ -56,6 +56,7 @@ object EnergyStore {
     private const val K_DAY_GRID = "v2_day_grid_wh"
     private const val K_DAY_LOAD = "v2_day_load_wh"
     private const val K_DAY_MISSED = "v2_day_missed_min"
+    private const val K_DAY_BYPASS = "v2_day_bypass_min"
     private const val K_DAY_PEAK_W = "v2_day_peak_w"
     private const val K_DAY_PEAK_AT = "v2_day_peak_at"
     private const val K_HISTORY = "history_json"
@@ -88,6 +89,7 @@ object EnergyStore {
         val dayGridWh: Double = 0.0,
         val dayLoadWh: Double = 0.0,
         val dayMissedMin: Int = 0,
+        val dayBypassMin: Int = 0,
         val dayPeakSolarW: Double = 0.0,
         val dayPeakAt: Long = 0L
     )
@@ -98,7 +100,11 @@ object EnergyStore {
         val gridWh: Double,
         val loadWh: Double = 0.0,
         val missedMin: Int = 0,
-        val peakSolarW: Double = 0.0
+        val peakSolarW: Double = 0.0,
+        /** Minutes the house ran straight off the grid (work mode "L", bypass) - unmetered by the inverter. */
+        val bypassMin: Int = 0,
+        /** False for days saved by older versions (no bypass tracking yet). */
+        val tracked: Boolean = true
     )
 
     /** One point of a day's power curve. */
@@ -148,6 +154,7 @@ object EnergyStore {
             dayGridWh = p.getD(K_DAY_GRID),
             dayLoadWh = p.getD(K_DAY_LOAD),
             dayMissedMin = p.getInt(K_DAY_MISSED, 0),
+            dayBypassMin = p.getInt(K_DAY_BYPASS, 0),
             dayPeakSolarW = p.getD(K_DAY_PEAK_W),
             dayPeakAt = p.getLong(K_DAY_PEAK_AT, 0L)
         )
@@ -163,6 +170,7 @@ object EnergyStore {
             .putString(K_DAY, s.dayKey)
             .putD(K_DAY_SOLAR, s.daySolarWh).putD(K_DAY_GRID, s.dayGridWh).putD(K_DAY_LOAD, s.dayLoadWh)
             .putInt(K_DAY_MISSED, s.dayMissedMin)
+            .putInt(K_DAY_BYPASS, s.dayBypassMin)
             .putD(K_DAY_PEAK_W, s.dayPeakSolarW).putLong(K_DAY_PEAK_AT, s.dayPeakAt)
             .apply()
         _state.value = s
@@ -237,7 +245,10 @@ object EnergyStore {
                 val solarWh = (s.lastSolarW + solar) / 2.0 * h
                 val gridWh = (s.lastGridW + grid) / 2.0 * h
                 val loadWh = (s.lastLoadW + load) / 2.0 * h
+                val bypass = if (json.optString("workMode", "").equals("L", ignoreCase = true))
+                    (gapMs / 60_000L).toInt() else 0
                 s = s.copy(
+                    dayBypassMin = s.dayBypassMin + bypass,
                     solarWh = s.solarWh + solarWh, gridWh = s.gridWh + gridWh, loadWh = s.loadWh + loadWh,
                     daySolarWh = s.daySolarWh + solarWh, dayGridWh = s.dayGridWh + gridWh, dayLoadWh = s.dayLoadWh + loadWh
                 )
@@ -274,9 +285,9 @@ object EnergyStore {
             s = s.copy(dayKey = newDay); write(context, s); return s
         }
         if (newDay > s.dayKey) {
-            appendHistory(context, DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW))
+            appendHistory(context, DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW, s.dayBypassMin))
             s = s.copy(dayKey = newDay, daySolarWh = 0.0, dayGridWh = 0.0, dayLoadWh = 0.0,
-                dayMissedMin = 0, dayPeakSolarW = 0.0, dayPeakAt = 0L)
+                dayMissedMin = 0, dayBypassMin = 0, dayPeakSolarW = 0.0, dayPeakAt = 0L)
             write(context, s)
         }
         return s
@@ -292,7 +303,7 @@ object EnergyStore {
             .filter { it.optString("date") != r.dateKey }
             .toMutableList()
         list.add(JSONObject().put("date", r.dateKey).put("solarWh", r.solarWh).put("gridWh", r.gridWh)
-            .put("loadWh", r.loadWh).put("missedMin", r.missedMin).put("peakW", r.peakSolarW))
+            .put("loadWh", r.loadWh).put("missedMin", r.missedMin).put("peakW", r.peakSolarW).put("bypassMin", r.bypassMin))
         val trimmed = list.sortedBy { it.optString("date") }.takeLast(MAX_HISTORY_DAYS)
         prefs(context).edit().putString(K_HISTORY, JSONArray(trimmed).toString()).apply()
     }
@@ -304,9 +315,10 @@ object EnergyStore {
         val past = (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             DayRecord(o.getString("date"), o.optDouble("solarWh", 0.0), o.optDouble("gridWh", 0.0),
-                o.optDouble("loadWh", 0.0), o.optInt("missedMin", 0), o.optDouble("peakW", 0.0))
+                o.optDouble("loadWh", 0.0), o.optInt("missedMin", 0), o.optDouble("peakW", 0.0),
+                o.optInt("bypassMin", 0), o.has("bypassMin"))
         }.filter { it.dateKey != s.dayKey }
-        val today = DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW)
+        val today = DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW, s.dayBypassMin)
         return (past + today).sortedByDescending { it.dateKey }
     }
 

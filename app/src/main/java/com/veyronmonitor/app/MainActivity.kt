@@ -73,11 +73,23 @@ private const val STALE_THRESHOLD_MS = 20 * 60_000L
 // A reading younger than this (by the inverter's own clock) counts as "Live".
 private const val LIVE_THRESHOLD_MS = 8 * 60_000L
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY, SCHEDULE, WARNINGS }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, METER, SCHEDULE, WARNINGS }
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        /** Set when the monthly meter reminder notification is tapped. */
+        val openMeter = kotlinx.coroutines.flow.MutableStateFlow(false)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(com.veyronmonitor.app.schedule.MeterReminder.EXTRA_OPEN_METER, false)) openMeter.value = true
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.getBooleanExtra(com.veyronmonitor.app.schedule.MeterReminder.EXTRA_OPEN_METER, false) == true) openMeter.value = true
+        com.veyronmonitor.app.schedule.MeterReminder.schedule(this)
         setContent {
             VeyronMonitorTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -114,6 +126,8 @@ private fun AppRoot() {
     remember { EnergyStore.load(context) }
     val energyState by EnergyStore.state.collectAsState()
     var tariff by remember { mutableStateOf(EnergyStore.tariff(context)) }
+    var meterVersion by remember { mutableIntStateOf(0) }
+    val openMeterRequest by MainActivity.openMeter.collectAsState()
     var backgroundEnabled by remember { mutableStateOf(MonitorService.isEnabled(context)) }
     var batteryRestricted by remember { mutableStateOf(!MonitorService.isIgnoringBatteryOptimizations(context)) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -268,6 +282,10 @@ private fun AppRoot() {
         }
     }
 
+    LaunchedEffect(openMeterRequest) {
+        if (openMeterRequest) { screen = Screen.METER; MainActivity.openMeter.value = false }
+    }
+
     // Try auto-login from saved credentials once, on first composition.
     LaunchedEffect(Unit) {
         val saved = CredentialStore.load(context)
@@ -377,6 +395,12 @@ private fun AppRoot() {
                                     label = { Text("Units") }
                                 )
                                 NavigationBarItem(
+                                    selected = screen == Screen.METER,
+                                    onClick = { screen = Screen.METER },
+                                    icon = { Icon(Icons.Filled.Speed, contentDescription = "Meter") },
+                                    label = { Text("Meter") }
+                                )
+                                NavigationBarItem(
                                     selected = screen == Screen.WARNINGS,
                                     onClick = {
                                         screen = Screen.WARNINGS
@@ -432,6 +456,27 @@ private fun AppRoot() {
                                     onResetGrid = { EnergyStore.resetGrid(context) },
                                     onResetLoad = { EnergyStore.resetLoad(context) }
                                 )
+                                Screen.METER -> {
+                                    val v = meterVersion
+                                    val readings = remember(v) { com.veyronmonitor.app.data.MeterStore.readings(context) }
+                                    val periods = remember(v, energyState.dayKey) { com.veyronmonitor.app.data.MeterStore.periods(context) }
+                                    val current = remember(v, energyState.dayKey, energyState.dayBypassMin / 30) {
+                                        com.veyronmonitor.app.data.MeterStore.current(context)
+                                    }
+                                    com.veyronmonitor.app.ui.MeterScreen(
+                                        readings = readings,
+                                        periods = periods,
+                                        current = current,
+                                        tariff = tariff,
+                                        warnAt = remember(v) { com.veyronmonitor.app.data.MeterStore.warnAt(context) },
+                                        limitAt = remember(v) { com.veyronmonitor.app.data.MeterStore.limitAt(context) },
+                                        onAddReading = { at, value ->
+                                            com.veyronmonitor.app.data.MeterStore.add(context, at, value).also { if (it == null) meterVersion++ }
+                                        },
+                                        onRemoveReading = { com.veyronmonitor.app.data.MeterStore.remove(context, it); meterVersion++ },
+                                        onSetLimits = { w, l -> com.veyronmonitor.app.data.MeterStore.setLimits(context, w, l); meterVersion++ }
+                                    )
+                                }
                                 Screen.WARNINGS -> WarningsScreen(
                                     entries = WarningLogStore.getLog(context)
                                 )
