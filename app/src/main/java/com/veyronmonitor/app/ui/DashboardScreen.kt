@@ -345,7 +345,7 @@ private fun BatteryRuntimeCard(r: com.veyronmonitor.app.data.Insights.Runtime, b
                 Text("BATTERY  •  ${r.soc}%", style = SectionCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
                     when (r.state) {
-                        "discharging" -> "~${I.hm(r.hoursLeft ?: 0.0)} aur chalegi" + (r.emptyAt?.let { "  (${I.clock(it)} tak)" } ?: "")
+                        "discharging" -> "~${I.hm(r.hoursLeft ?: 0.0)} aur chalegi" + (r.emptyAt?.let { "  (${I.whenText(it)} tak)" } ?: "")
                         "charging" -> "Full hone mein ~${I.hm(r.hoursToFull ?: 0.0)}"
                         else -> r.hoursLeft?.let { "Bijli jaye to ~${I.hm(it)}" } ?: "Battery idle"
                     },

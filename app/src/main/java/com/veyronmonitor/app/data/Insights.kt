@@ -40,10 +40,25 @@ object Insights {
 
     fun hm(hours: Double): String {
         val mins = (hours * 60).roundToInt().coerceAtLeast(0)
+        if (mins >= 24 * 60) {
+            val d = mins / (24 * 60); val h = (mins % (24 * 60)) / 60
+            return if (h == 0) "$d din" else "$d din $h ghante"
+        }
         return when { mins < 60 -> "$mins min"; mins % 60 == 0 -> "${mins / 60} ghante"; else -> "${mins / 60} ghante ${mins % 60} min" }
     }
 
     fun clock(ms: Long): String = SimpleDateFormat("h:mm a", Locale.US).format(ms)
+
+    /** Time with the day when it isn't today: "9:18 PM", "kal 9:18 PM", "Wed 9:18 PM". */
+    fun whenText(ms: Long): String {
+        val today = keyFmt.format(System.currentTimeMillis())
+        val tomorrow = keyFmt.format(System.currentTimeMillis() + 86_400_000L)
+        return when (keyFmt.format(ms)) {
+            today -> clock(ms)
+            tomorrow -> "kal " + clock(ms)
+            else -> SimpleDateFormat("EEE h:mm a", Locale.US).format(ms)
+        }
+    }
 
     // ---------------- battery runtime ----------------
 

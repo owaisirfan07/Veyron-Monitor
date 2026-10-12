@@ -98,7 +98,7 @@ object SolarAssistant {
             when (r.state) {
                 "discharging" -> {
                     append("Abhi ${r.drainW?.toInt()} W use ho rahi hai - is raftar se ~${Insights.hm(r.hoursLeft ?: 0.0)} aur chalegi")
-                    r.emptyAt?.let { append(" (~${Insights.clock(it)} tak)") }
+                    r.emptyAt?.let { append(" (~${Insights.whenText(it)} tak)") }
                     append(".")
                 }
                 "charging" -> {
