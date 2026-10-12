@@ -62,8 +62,13 @@ fun DashboardScreen(
     todayLoadWh: Double,
     onRefresh: () -> Unit,
     onOpenUnits: () -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    runtime: com.veyronmonitor.app.data.Insights.Runtime? = null,
+    battery: com.veyronmonitor.app.data.BatteryConfig.Battery? = null,
+    onSaveBattery: (com.veyronmonitor.app.data.BatteryConfig.Battery) -> Unit = {},
+    onOpenAssistant: () -> Unit = {}
 ) {
+    var showBattery by remember { mutableStateOf(false) }
     var showRawData by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -96,6 +101,7 @@ fun DashboardScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            IconButton(onClick = onOpenAssistant) { Icon(Icons.Filled.QuestionAnswer, "Assistant") }
             IconButton(onClick = onRefresh) {
                 if (isRefreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                 else Icon(Icons.Filled.Refresh, "Refresh")
@@ -181,6 +187,9 @@ fun DashboardScreen(
             }
         }
 
+        // ---------- Battery runtime ----------
+        if (runtime != null) BatteryRuntimeCard(runtime, battery, onClick = { showBattery = true })
+
         // ---------- Today's units strip ----------
         Card(
             onClick = onOpenUnits,
@@ -237,6 +246,8 @@ fun DashboardScreen(
         MetricSection("Temperature", DischargeColor, tempMetrics)
         Spacer(Modifier.height(20.dp))
     }
+
+    if (showBattery && battery != null) BatteryDialog(battery, onDismiss = { showBattery = false }) { onSaveBattery(it); showBattery = false }
 
     if (showRawData && data != null) {
         AlertDialog(
@@ -312,4 +323,91 @@ private fun MetricCard(modifier: Modifier, metric: Metric, accent: Color) {
             }
         }
     }
+}
+
+@Composable
+private fun BatteryRuntimeCard(r: com.veyronmonitor.app.data.Insights.Runtime, b: com.veyronmonitor.app.data.BatteryConfig.Battery?, onClick: () -> Unit) {
+    val I = com.veyronmonitor.app.data.Insights
+    val color = when (r.state) { "discharging" -> DischargeColor; "charging" -> BatteryColor; else -> GridColor }
+    Card(
+        onClick = onClick,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+    ) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(color.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+                Icon(if (r.state == "charging") Icons.Filled.BatteryChargingFull else Icons.Filled.BatteryStd, null, tint = color)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text("BATTERY  •  ${r.soc}%", style = SectionCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    when (r.state) {
+                        "discharging" -> "~${I.hm(r.hoursLeft ?: 0.0)} aur chalegi" + (r.emptyAt?.let { "  (${I.clock(it)} tak)" } ?: "")
+                        "charging" -> "Full hone mein ~${I.hm(r.hoursToFull ?: 0.0)}"
+                        else -> r.hoursLeft?.let { "Bijli jaye to ~${I.hm(it)}" } ?: "Battery idle"
+                    },
+                    style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold
+                )
+                Text(
+                    (if (r.state == "charging") r.hoursLeft?.let { "Bijli jaye to ~${I.hm(it)} chalegi  •  " } ?: "" else "") +
+                        "Andaza: ${r.basis}" + (b?.let { "  •  ${it.capacityWh.toInt()} Wh" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BatteryDialog(b: com.veyronmonitor.app.data.BatteryConfig.Battery, onDismiss: () -> Unit,
+                          onSave: (com.veyronmonitor.app.data.BatteryConfig.Battery) -> Unit) {
+    var volts by remember { mutableStateOf(b.volts.toString()) }
+    var ah by remember { mutableStateOf(b.ah.toInt().toString()) }
+    var count by remember { mutableStateOf(b.count.toString()) }
+    var cutoff by remember { mutableStateOf(b.cutoffPct.toString()) }
+    var lithium by remember { mutableStateOf(b.lithium) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Battery") },
+        text = {
+            Column {
+                Text("Runtime ke andaze ke liye. Itel 24V 100Ah lithium = 25.6 V x 100 Ah.", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    OutlinedTextField(volts, { volts = it.filter { c -> c.isDigit() || c == '.' } }, label = { Text("Volt") },
+                        singleLine = true, modifier = Modifier.weight(1f),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal))
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedTextField(ah, { ah = it.filter(Char::isDigit) }, label = { Text("Ah") }, singleLine = true, modifier = Modifier.weight(1f),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number))
+                }
+                Row {
+                    OutlinedTextField(count, { count = it.filter(Char::isDigit) }, label = { Text("Kitni batteries") }, singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number))
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedTextField(cutoff, { cutoff = it.filter(Char::isDigit) }, label = { Text("Kitne % tak") }, singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = lithium, onCheckedChange = { lithium = it })
+                    Text("Lithium battery", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text("Kitne % tak: inverter battery ko kis % par band karta hai (aam taur par 15-20%).",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val v = volts.toDoubleOrNull(); val a = ah.toDoubleOrNull(); val n = count.toIntOrNull(); val cut = cutoff.toIntOrNull()
+                if (v != null && a != null && n != null && n > 0 && cut != null && cut in 0..90)
+                    onSave(com.veyronmonitor.app.data.BatteryConfig.Battery(v, a, n, lithium, cut))
+            }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

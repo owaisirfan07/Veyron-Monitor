@@ -69,7 +69,10 @@ fun UnitsScreen(
     onFixBattery: () -> Unit,
     onResetSolar: () -> Unit,
     onResetGrid: () -> Unit,
-    onResetLoad: () -> Unit
+    onResetLoad: () -> Unit,
+    onOpenReports: () -> Unit = {},
+    /** When set, tapping the rate opens this (rates come from the Meter tab) instead of the simple rate dialog. */
+    onRateTap: (() -> Unit)? = null
 ) {
     var showTariff by remember { mutableStateOf(false) }
     var resetTarget by remember { mutableStateOf<String?>(null) }
@@ -85,18 +88,23 @@ fun UnitsScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Column(Modifier.padding(top = 8.dp, bottom = 2.dp)) {
-                Text("Units", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    pretty(energy.dayKey, "EEEE, d MMMM yyyy"),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(Modifier.padding(top = 8.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Units", style = MaterialTheme.typography.headlineMedium)
+                    Text(
+                        pretty(energy.dayKey, "EEEE, d MMMM yyyy"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                FilledTonalButton(onClick = onOpenReports) {
+                    Icon(Icons.Filled.Insights, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Reports")
+                }
             }
         }
 
         // ---------------- Today hero ----------------
-        item { TodayHero(energy, tariff, onEditTariff = { showTariff = true }) }
+        item { TodayHero(energy, tariff, onEditTariff = { onRateTap?.invoke() ?: run { showTariff = true } }) }
 
         // ---------------- Power curve ----------------
         item {
@@ -381,6 +389,13 @@ private fun TodayHero(energy: EnergyStore.EnergyState, tariff: Double, onEditTar
                 Box(Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(50)).background(GridColor.copy(alpha = 0.55f))) {
                     Box(Modifier.fillMaxWidth(share.coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(50)).background(SolarColor))
                 }
+            }
+            if (energy.dayEstWh >= 50) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Is mein ${units(energy.dayEstWh)} units andaza hain - beech mein kuch readings nahi aayi thi, wahan seedhi line se bhara.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             if (energy.dayMissedMin >= 20) {
                 Spacer(Modifier.height(12.dp))

@@ -216,3 +216,50 @@ fun EstimateBarsChart(
         }
     }
 }
+
+/** Grouped bars: one group per bucket, one bar per series. Values in kWh. */
+@Composable
+fun GroupedBarsChart(
+    series: List<Pair<Color, List<Double>>>,
+    labels: List<String>,
+    axisColor: Color,
+    gridLineColor: Color,
+    unit: String = "",
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier.fillMaxWidth().height(210.dp)) {
+        val leftPad = 34.dp.toPx()
+        val bottomPad = 22.dp.toPx()
+        val topPad = 8.dp.toPx()
+        val w = size.width - leftPad
+        val h = size.height - bottomPad - topPad
+        val textPx = 10.dp.toPx()
+        val n = labels.size
+        val maxV = series.flatMap { it.second }.maxOrNull()?.toFloat() ?: 0f
+        val top = niceTop(max(maxV, 0.4f))
+        for (i in 0..4) {
+            val y = topPad + h - h * i / 4f
+            drawLine(gridLineColor, Offset(leftPad, y), Offset(size.width, y), strokeWidth = 1f,
+                pathEffect = if (i == 0) null else PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
+            val v = top * i / 4f
+            label(if (v >= 10 || v % 1f == 0f) "%.0f".format(v) else "%.1f".format(v), leftPad - 6.dp.toPx(), y + textPx / 3,
+                axisColor, textPx, android.graphics.Paint.Align.RIGHT)
+        }
+        if (n == 0) return@Canvas
+        val slot = w / n
+        val groupW = slot * 0.78f
+        val barW = (groupW / series.size).coerceAtMost(12.dp.toPx())
+        val labelEvery = ceil(n / 8f).toInt().coerceAtLeast(1)
+        for (i in 0 until n) {
+            val cx = leftPad + slot * i + slot / 2
+            val start = cx - barW * series.size / 2
+            series.forEachIndexed { si, (color, vals) ->
+                val v = vals.getOrElse(i) { 0.0 }.toFloat()
+                val bh = h * (v / top).coerceIn(0f, 1f)
+                if (bh > 0.5f) drawRoundRect(color, Offset(start + barW * si + 0.5f, topPad + h - bh), Size(barW - 1f, bh),
+                    CornerRadius(barW / 4, barW / 4))
+            }
+            if ((n - 1 - i) % labelEvery == 0) label(labels[i], cx, size.height - 4.dp.toPx(), axisColor, textPx, android.graphics.Paint.Align.CENTER)
+        }
+    }
+}

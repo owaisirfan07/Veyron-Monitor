@@ -73,7 +73,7 @@ private const val STALE_THRESHOLD_MS = 20 * 60_000L
 // A reading younger than this (by the inverter's own clock) counts as "Live".
 private const val LIVE_THRESHOLD_MS = 8 * 60_000L
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY, METER, SCHEDULE, WARNINGS }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, METER, SCHEDULE, WARNINGS, REPORTS, ASSISTANT }
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -127,6 +127,12 @@ private fun AppRoot() {
     val energyState by EnergyStore.state.collectAsState()
     var tariff by remember { mutableStateOf(EnergyStore.tariff(context)) }
     var meterVersion by remember { mutableIntStateOf(0) }
+    var batteryCfg by remember { mutableStateOf(com.veyronmonitor.app.data.BatteryConfig.get(context)) }
+    val chat = remember { mutableStateListOf<com.veyronmonitor.app.ui.ChatMsg>() }
+    var chatBusy by remember { mutableStateOf(false) }
+    val customRates = remember(meterVersion) {
+        context.getSharedPreferences("veyron_monitor_meter", android.content.Context.MODE_PRIVATE).contains("bill_rates")
+    }
     val openMeterRequest by MainActivity.openMeter.collectAsState()
     var backgroundEnabled by remember { mutableStateOf(MonitorService.isEnabled(context)) }
     var batteryRestricted by remember { mutableStateOf(!MonitorService.isIgnoringBatteryOptimizations(context)) }
@@ -348,6 +354,25 @@ private fun AppRoot() {
                         onLogin = ::attemptLogin
                     )
                 }
+                screen == Screen.REPORTS -> {
+                    androidx.activity.compose.BackHandler { screen = Screen.ENERGY }
+                    com.veyronmonitor.app.ui.ReportsScreen(refreshKey = energyState.dayKey to meterVersion, onBack = { screen = Screen.ENERGY })
+                }
+                screen == Screen.ASSISTANT -> {
+                    androidx.activity.compose.BackHandler { screen = Screen.DASHBOARD }
+                    com.veyronmonitor.app.ui.AssistantScreen(chat, chatBusy, onAsk = { q ->
+                        chat.add(com.veyronmonitor.app.ui.ChatMsg(true, q))
+                        chatBusy = true
+                        scope.launch {
+                            val a = withContext(Dispatchers.IO) {
+                                try { com.veyronmonitor.app.data.SolarAssistant.answer(context, q, data) }
+                                catch (e: Exception) { "Jawab nahi ban saka: ${e.message}" }
+                            }
+                            chat.add(com.veyronmonitor.app.ui.ChatMsg(false, a))
+                            chatBusy = false
+                        }
+                    }, onBack = { screen = Screen.DASHBOARD })
+                }
                 screen == Screen.SCHEDULE -> {
                     ScheduleScreen(
                         schedules = schedules,
@@ -433,8 +458,12 @@ private fun AppRoot() {
                                     history = remember(energyState) { EnergyStore.getHistory(context) },
                                     sampleDays = remember(energyState.dayKey) { EnergyStore.sampleDays(context) },
                                     samplesFor = { EnergyStore.getSamples(context, it) },
-                                    tariff = tariff,
+                                    tariff = if (customRates) remember(meterVersion, energyState.dayKey) {
+                                        com.veyronmonitor.app.data.Insights.effectiveRate(context)
+                                    } else tariff,
                                     onTariffChange = { EnergyStore.setTariff(context, it); tariff = it },
+                                    onOpenReports = { screen = Screen.REPORTS },
+                                    onRateTap = if (customRates) ({ screen = Screen.METER }) else null,
                                     backgroundEnabled = backgroundEnabled,
                                     onBackgroundToggle = {
                                         backgroundEnabled = it
@@ -458,23 +487,23 @@ private fun AppRoot() {
                                 )
                                 Screen.METER -> {
                                     val v = meterVersion
-                                    val readings = remember(v) { com.veyronmonitor.app.data.MeterStore.readings(context) }
-                                    val periods = remember(v, energyState.dayKey) { com.veyronmonitor.app.data.MeterStore.periods(context) }
-                                    val current = remember(v, energyState.dayKey, energyState.dayBypassMin / 30) {
-                                        com.veyronmonitor.app.data.MeterStore.current(context)
-                                    }
+                                    val ms = com.veyronmonitor.app.data.MeterStore
                                     com.veyronmonitor.app.ui.MeterScreen(
-                                        readings = readings,
-                                        periods = periods,
-                                        current = current,
-                                        tariff = tariff,
-                                        warnAt = remember(v) { com.veyronmonitor.app.data.MeterStore.warnAt(context) },
-                                        limitAt = remember(v) { com.veyronmonitor.app.data.MeterStore.limitAt(context) },
-                                        onAddReading = { at, value ->
-                                            com.veyronmonitor.app.data.MeterStore.add(context, at, value).also { if (it == null) meterVersion++ }
+                                        readings = remember(v) { ms.readings(context) },
+                                        periods = remember(v) { ms.periods(context) },
+                                        current = remember(v) { ms.current(context) },
+                                        rates = remember(v) { ms.rates(context) },
+                                        warnAt = remember(v) { ms.warnAt(context) },
+                                        limitAt = remember(v) { ms.limitAt(context) },
+                                        recentDays = remember(energyState.dayKey) {
+                                            EnergyStore.getHistory(context).filter { it.dateKey != energyState.dayKey }
                                         },
-                                        onRemoveReading = { com.veyronmonitor.app.data.MeterStore.remove(context, it); meterVersion++ },
-                                        onSetLimits = { w, l -> com.veyronmonitor.app.data.MeterStore.setLimits(context, w, l); meterVersion++ }
+                                        onAddReading = { at, value, bill ->
+                                            ms.add(context, at, value, bill).also { if (it == null) meterVersion++ }
+                                        },
+                                        onRemoveReading = { ms.remove(context, it); meterVersion++ },
+                                        onSetLimits = { w, l -> ms.setLimits(context, w, l); meterVersion++ },
+                                        onSetRates = { ms.setRates(context, it); meterVersion++ }
                                     )
                                 }
                                 Screen.WARNINGS -> WarningsScreen(
@@ -524,6 +553,10 @@ private fun AppRoot() {
                                         todayLoadWh = energyState.dayLoadWh,
                                         onRefresh = { scope.launch { refreshData() } },
                                         onOpenUnits = { screen = Screen.ENERGY },
+                                        runtime = remember(data, batteryCfg) { com.veyronmonitor.app.data.Insights.runtime(context, data) },
+                                        battery = batteryCfg,
+                                        onSaveBattery = { com.veyronmonitor.app.data.BatteryConfig.set(context, it); batteryCfg = it },
+                                        onOpenAssistant = { screen = Screen.ASSISTANT },
                                         onLogout = {
                                             MonitorService.stop(context)
                                             BackupWorker.cancel(context)

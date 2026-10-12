@@ -74,6 +74,7 @@ class MonitorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loop: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -90,6 +91,14 @@ class MonitorService : Service() {
         } catch (_: Exception) {
             stopSelf(); return START_NOT_STICKY
         }
+        // Keep the CPU awake while counting. Without this the phone sleeps when the
+        // screen is off, readings stop, and the units of that time are lost.
+        if (wakeLock?.isHeld != true) {
+            wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "VeyronMonitor:counting").apply {
+                    setReferenceCounted(false); acquire()
+                }
+        }
         if (loop?.isActive != true) {
             loop = scope.launch {
                 while (isActive) {
@@ -104,6 +113,7 @@ class MonitorService : Service() {
     }
 
     override fun onDestroy() {
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) { }
         scope.cancel()
         super.onDestroy()
     }

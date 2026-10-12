@@ -37,6 +37,8 @@ object EnergyStore {
     private const val MAX_HISTORY_DAYS = 400
     private const val SAMPLE_DAYS_KEPT = 8
     const val MAX_GAP_MS = 25 * 60_000L
+    /** Gaps between 25 min and this are filled by a straight line between the two readings (marked as estimate). */
+    const val FILL_GAP_MS = 2 * 3_600_000L
 
     // v2 keys (Double stored as raw Long bits for full precision)
     private const val K_VERSION = "v2_ready"
@@ -59,6 +61,12 @@ object EnergyStore {
     private const val K_DAY_BYPASS = "v2_day_bypass_min"
     private const val K_DAY_PEAK_W = "v2_day_peak_w"
     private const val K_DAY_PEAK_AT = "v2_day_peak_at"
+    private const val K_DAY_CHG = "v3_day_charge_wh"
+    private const val K_DAY_DIS = "v3_day_discharge_wh"
+    private const val K_DAY_EST = "v3_day_est_wh"
+    private const val K_LAST_CHG_W = "v3_last_chg_w"
+    private const val K_LAST_DIS_W = "v3_last_dis_w"
+    private const val K_AVG_DIS_W = "v3_avg_dis_w"
     private const val K_HISTORY = "history_json"
     private const val K_TARIFF = "tariff_rs"
 
@@ -91,7 +99,15 @@ object EnergyStore {
         val dayMissedMin: Int = 0,
         val dayBypassMin: Int = 0,
         val dayPeakSolarW: Double = 0.0,
-        val dayPeakAt: Long = 0L
+        val dayPeakAt: Long = 0L,
+        val dayChargeWh: Double = 0.0,
+        val dayDischargeWh: Double = 0.0,
+        /** Solar Wh today that came from filling a gap (estimate, not measured). */
+        val dayEstWh: Double = 0.0,
+        val lastChargeW: Double = 0.0,
+        val lastDischargeW: Double = 0.0,
+        /** Running average of battery drain (W) while discharging - used for "how long will it last". */
+        val avgDischargeW: Double = 0.0
     )
 
     data class DayRecord(
@@ -104,11 +120,16 @@ object EnergyStore {
         /** Minutes the house ran straight off the grid (work mode "L", bypass) - unmetered by the inverter. */
         val bypassMin: Int = 0,
         /** False for days saved by older versions (no bypass tracking yet). */
-        val tracked: Boolean = true
+        val tracked: Boolean = true,
+        val chargeWh: Double = 0.0,
+        val dischargeWh: Double = 0.0,
+        val estWh: Double = 0.0
     )
 
     /** One point of a day's power curve. */
-    data class Sample(val minuteOfDay: Int, val solarW: Float, val gridW: Float, val loadW: Float, val batteryPct: Float)
+    data class Sample(val minuteOfDay: Int, val solarW: Float, val gridW: Float, val loadW: Float, val batteryPct: Float,
+                      /** + charging, - discharging */
+                      val batteryW: Float = 0f)
 
     private val lock = Any()
     private val _state = MutableStateFlow(EnergyState())
@@ -156,7 +177,13 @@ object EnergyStore {
             dayMissedMin = p.getInt(K_DAY_MISSED, 0),
             dayBypassMin = p.getInt(K_DAY_BYPASS, 0),
             dayPeakSolarW = p.getD(K_DAY_PEAK_W),
-            dayPeakAt = p.getLong(K_DAY_PEAK_AT, 0L)
+            dayPeakAt = p.getLong(K_DAY_PEAK_AT, 0L),
+            dayChargeWh = p.getD(K_DAY_CHG),
+            dayDischargeWh = p.getD(K_DAY_DIS),
+            dayEstWh = p.getD(K_DAY_EST),
+            lastChargeW = p.getD(K_LAST_CHG_W),
+            lastDischargeW = p.getD(K_LAST_DIS_W),
+            avgDischargeW = p.getD(K_AVG_DIS_W)
         )
     }
 
@@ -172,6 +199,8 @@ object EnergyStore {
             .putInt(K_DAY_MISSED, s.dayMissedMin)
             .putInt(K_DAY_BYPASS, s.dayBypassMin)
             .putD(K_DAY_PEAK_W, s.dayPeakSolarW).putLong(K_DAY_PEAK_AT, s.dayPeakAt)
+            .putD(K_DAY_CHG, s.dayChargeWh).putD(K_DAY_DIS, s.dayDischargeWh).putD(K_DAY_EST, s.dayEstWh)
+            .putD(K_LAST_CHG_W, s.lastChargeW).putD(K_LAST_DIS_W, s.lastDischargeW).putD(K_AVG_DIS_W, s.avgDischargeW)
             .apply()
         _state.value = s
     }
@@ -229,6 +258,8 @@ object EnergyStore {
         val grid = json.watts("gridPowerInputActiveTotal")
         val load = json.watts("acOutputActivePowerTotal")
         val battery = json.watts("batteryCapacity")
+        val chg = json.watts("batteryChargingPower")
+        val dis = json.watts("batteryDischargingPower")
 
         if (ts == s.lastReadingTs) return false
         // Older than what we have: a repeat. Only accept it if the clock
@@ -240,14 +271,20 @@ object EnergyStore {
 
         if (s.lastReadingTs > 0L && ts > s.lastReadingTs) {
             val gapMs = ts - s.lastReadingTs
-            if (gapMs <= MAX_GAP_MS) {
+            if (gapMs <= FILL_GAP_MS) {
+                // <= 25 min: measured. 25 min - 2 h: straight line between the two readings (estimate).
+                val estimated = gapMs > MAX_GAP_MS
                 val h = gapMs / 3_600_000.0
+                val chgWh = (s.lastChargeW + chg) / 2.0 * h
+                val disWh = (s.lastDischargeW + dis) / 2.0 * h
                 val solarWh = (s.lastSolarW + solar) / 2.0 * h
                 val gridWh = (s.lastGridW + grid) / 2.0 * h
                 val loadWh = (s.lastLoadW + load) / 2.0 * h
                 val bypass = if (json.optString("workMode", "").equals("L", ignoreCase = true))
                     (gapMs / 60_000L).toInt() else 0
                 s = s.copy(
+                    dayChargeWh = s.dayChargeWh + chgWh, dayDischargeWh = s.dayDischargeWh + disWh,
+                    dayEstWh = if (estimated) s.dayEstWh + solarWh else s.dayEstWh,
                     dayBypassMin = s.dayBypassMin + bypass,
                     solarWh = s.solarWh + solarWh, gridWh = s.gridWh + gridWh, loadWh = s.loadWh + loadWh,
                     daySolarWh = s.daySolarWh + solarWh, dayGridWh = s.dayGridWh + gridWh, dayLoadWh = s.dayLoadWh + loadWh
@@ -266,10 +303,13 @@ object EnergyStore {
         }
 
         if (solar > s.dayPeakSolarW) s = s.copy(dayPeakSolarW = solar, dayPeakAt = ts)
+        // remember typical battery drain (slow average) for runtime estimates
+        if (dis > 20) s = s.copy(avgDischargeW = if (s.avgDischargeW <= 0) dis else s.avgDischargeW * 0.9 + dis * 0.1)
         s = s.copy(lastReadingTs = ts, lastSolarW = solar, lastGridW = grid, lastLoadW = load,
+            lastChargeW = chg, lastDischargeW = dis,
             lastSeenAt = System.currentTimeMillis())
         write(context, s)
-        appendSample(context, readingDay, Sample(minuteOfDay(ts), solar.toFloat(), grid.toFloat(), load.toFloat(), battery.toFloat()))
+        appendSample(context, readingDay, Sample(minuteOfDay(ts), solar.toFloat(), grid.toFloat(), load.toFloat(), battery.toFloat(), (chg - dis).toFloat()))
         true
     }
 
@@ -285,9 +325,11 @@ object EnergyStore {
             s = s.copy(dayKey = newDay); write(context, s); return s
         }
         if (newDay > s.dayKey) {
-            appendHistory(context, DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW, s.dayBypassMin))
+            appendHistory(context, DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW, s.dayBypassMin,
+                true, s.dayChargeWh, s.dayDischargeWh, s.dayEstWh))
             s = s.copy(dayKey = newDay, daySolarWh = 0.0, dayGridWh = 0.0, dayLoadWh = 0.0,
-                dayMissedMin = 0, dayBypassMin = 0, dayPeakSolarW = 0.0, dayPeakAt = 0L)
+                dayMissedMin = 0, dayBypassMin = 0, dayPeakSolarW = 0.0, dayPeakAt = 0L,
+                dayChargeWh = 0.0, dayDischargeWh = 0.0, dayEstWh = 0.0)
             write(context, s)
         }
         return s
@@ -303,7 +345,8 @@ object EnergyStore {
             .filter { it.optString("date") != r.dateKey }
             .toMutableList()
         list.add(JSONObject().put("date", r.dateKey).put("solarWh", r.solarWh).put("gridWh", r.gridWh)
-            .put("loadWh", r.loadWh).put("missedMin", r.missedMin).put("peakW", r.peakSolarW).put("bypassMin", r.bypassMin))
+            .put("loadWh", r.loadWh).put("missedMin", r.missedMin).put("peakW", r.peakSolarW).put("bypassMin", r.bypassMin)
+            .put("chgWh", r.chargeWh).put("disWh", r.dischargeWh).put("estWh", r.estWh))
         val trimmed = list.sortedBy { it.optString("date") }.takeLast(MAX_HISTORY_DAYS)
         prefs(context).edit().putString(K_HISTORY, JSONArray(trimmed).toString()).apply()
     }
@@ -316,9 +359,11 @@ object EnergyStore {
             val o = arr.getJSONObject(i)
             DayRecord(o.getString("date"), o.optDouble("solarWh", 0.0), o.optDouble("gridWh", 0.0),
                 o.optDouble("loadWh", 0.0), o.optInt("missedMin", 0), o.optDouble("peakW", 0.0),
-                o.optInt("bypassMin", 0), o.has("bypassMin"))
+                o.optInt("bypassMin", 0), o.has("bypassMin"),
+                o.optDouble("chgWh", 0.0), o.optDouble("disWh", 0.0), o.optDouble("estWh", 0.0))
         }.filter { it.dateKey != s.dayKey }
-        val today = DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW, s.dayBypassMin)
+        val today = DayRecord(s.dayKey, s.daySolarWh, s.dayGridWh, s.dayLoadWh, s.dayMissedMin, s.dayPeakSolarW, s.dayBypassMin,
+            true, s.dayChargeWh, s.dayDischargeWh, s.dayEstWh)
         return (past + today).sortedByDescending { it.dateKey }
     }
 
@@ -326,7 +371,7 @@ object EnergyStore {
 
     private fun appendSample(context: Context, day: String, sm: Sample) {
         val sp = samplePrefs(context)
-        val line = "${sm.minuteOfDay},${sm.solarW.toInt()},${sm.gridW.toInt()},${sm.loadW.toInt()},${sm.batteryPct.toInt()}"
+        val line = "${sm.minuteOfDay},${sm.solarW.toInt()},${sm.gridW.toInt()},${sm.loadW.toInt()},${sm.batteryPct.toInt()},${sm.batteryW.toInt()}"
         val existing = sp.getString(day, "") ?: ""
         val e = sp.edit().putString(day, if (existing.isEmpty()) line else "$existing;$line")
         // keep only the most recent days
@@ -341,7 +386,7 @@ object EnergyStore {
         return raw.split(';').mapNotNull { part ->
             val f = part.split(',')
             if (f.size < 5) null else try {
-                Sample(f[0].toInt(), f[1].toFloat(), f[2].toFloat(), f[3].toFloat(), f[4].toFloat())
+                Sample(f[0].toInt(), f[1].toFloat(), f[2].toFloat(), f[3].toFloat(), f[4].toFloat(), f.getOrNull(5)?.toFloatOrNull() ?: 0f)
             } catch (_: Exception) { null }
         }.sortedBy { it.minuteOfDay }
     }
