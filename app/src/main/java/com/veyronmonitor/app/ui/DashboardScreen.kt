@@ -60,6 +60,7 @@ fun DashboardScreen(
     todaySolarWh: Double,
     todayGridWh: Double,
     todayLoadWh: Double,
+    todayPeakW: Double = 0.0,
     onRefresh: () -> Unit,
     onOpenUnits: () -> Unit,
     onLogout: () -> Unit,
@@ -200,16 +201,18 @@ fun DashboardScreen(
         ) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("AAJ KE UNITS", style = SectionCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("AAJ KA SOLAR", style = SectionCaption, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.weight(1f))
                     Text("Graph dekhein", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                     Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 }
                 Spacer(Modifier.height(12.dp))
-                Row {
-                    UnitStat(Modifier.weight(1f), "Solar", todaySolarWh, SolarDeep, Icons.Filled.WbSunny)
-                    UnitStat(Modifier.weight(1f), "Grid", todayGridWh, GridColor, Icons.Filled.ElectricalServices)
-                    UnitStat(Modifier.weight(1f), "Ghar", todayLoadWh, LoadColor, Icons.Filled.Home)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    UnitStat(Modifier.weight(1f), "Solar units", todaySolarWh, SolarDeep, Icons.Filled.WbSunny)
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(if (todayPeakW > 0) "${todayPeakW.toInt()} W" else "--", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("aaj ka peak", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }

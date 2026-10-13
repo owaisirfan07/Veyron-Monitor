@@ -19,7 +19,6 @@ object SolarAssistant {
         "Battery raat ko kitni chalegi?",
         "Solar kam kyun hai?",
         "Is mahine kitni bachat hui?",
-        "Grid se kitni bijli li?",
         "Kal kitne units bane?",
         "Abhi kya chal raha hai?"
     )
@@ -46,7 +45,7 @@ object SolarAssistant {
                 val key = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(y.time)
                 val r = EnergyStore.getHistory(c).firstOrNull { it.dateKey == key }
                 if (r == null) "Kal ka record app mein nahi hai."
-                else "Kal (${key.takeLast(5)}):\n• Solar: ${u(r.solarWh)} units\n• Grid (inverter ne naapa): ${u(r.gridWh)} units\n• Ghar ka kharch: ${u(r.loadWh)} units" +
+                else "Kal (${key.takeLast(5)}) solar se ${u(r.solarWh)} units bane" + (if (r.peakSolarW > 0) "\n• Sab se zyada: ${r.peakSolarW.toInt()} W" else "") +
                     (if (r.estWh > 50) "\n\n${u(r.estWh)} units andaza hain (beech mein kuch readings nahi aayi thi)." else "") +
                     (if (r.missedMin > 60) "\n\n${Insights.hm(r.missedMin / 60.0)} ka data nahi mila - asal units thore zyada ho sakte hain." else "")
             }
@@ -54,21 +53,12 @@ object SolarAssistant {
             has(q, "mahin", "month", "is mahine") -> {
                 val prefix = e.dayKey.take(7)
                 val m = EnergyStore.getHistory(c).filter { it.dateKey.startsWith(prefix) }
-                "Is mahine ab tak:\n• Solar: ${u(m.sumOf { it.solarWh })} units\n• Grid (inverter): ${u(m.sumOf { it.gridWh })} units\n• Ghar ka kharch: ${u(m.sumOf { it.loadWh })} units" +
-                    "\n\nGrid ka pakka number Meter tab mein KE readings se milta hai."
-            }
-
-            has(q, "grid", "kesc", "wapda") -> {
-                val cur = MeterStore.current(c)
-                buildString {
-                    append("Aaj inverter ne grid se ${u(e.dayGridWh)} units naape (sirf jo inverter ke andar se guzre, jaise battery charging).")
-                    if (cur?.perDay != null) append("\n\nKE meter ke hisaab se is bill mein ab tak ${"%.1f".format(cur.units)} units - roz ka average ${"%.1f".format(cur.perDay)} units.")
-                    else append("\n\nPakka number ke liye Meter tab mein meter ki reading daalein.")
-                }
+                "Is mahine ab tak solar se ${u(m.sumOf { it.solarWh })} units bane" +
+                    (if (m.isNotEmpty()) " (roz ka average ${u(m.sumOf { it.solarWh } / m.size)} units)." else ".")
             }
 
             has(q, "aaj", "today", "generate", "bane", "bani", "units", "unit") ->
-                "Aaj ab tak:\n• Solar: ${u(e.daySolarWh)} units\n• Grid (inverter ne naapa): ${u(e.dayGridWh)} units\n• Ghar ka kharch: ${u(e.dayLoadWh)} units" +
+                "Aaj ab tak solar se ${u(e.daySolarWh)} units bane." +
                     (if (e.dayPeakSolarW > 0) "\n• Sab se zyada solar: ${e.dayPeakSolarW.toInt()} W (${Insights.clock(e.dayPeakAt)})" else "") +
                     (if (e.dayEstWh > 50) "\n\nIs mein ${u(e.dayEstWh)} units andaza hain (beech mein readings nahi aayi thi)." else "") +
                     (if (e.dayMissedMin >= 60) "\n\n${Insights.hm(e.dayMissedMin / 60.0)} ka data nahi mila - asal units thore zyada ho sakte hain." else "")
@@ -141,17 +131,8 @@ object SolarAssistant {
 
     private fun savings(c: Context): String {
         val s = Insights.savings(c)
-        return buildString {
-            append("Is bill mein (${s.fromLabel} se) solar ne ${"%.1f".format(s.solarUnits)} units banaye.\n")
-            if (s.billNow != null && s.billWithoutSolar != null && s.gridUnits != null) {
-                append("KE meter: ${"%.1f".format(s.gridUnits)} units - bill ab tak ~Rs ${"%,d".format(s.billNow)}.\n")
-                append("Solar na hota to ~Rs ${"%,d".format(s.billWithoutSolar)} hota.\n")
-                append("Bachat: ~Rs ${"%,d".format(s.saved)}.")
-            } else {
-                append("Bachat: ~Rs ${"%,d".format(s.saved)} (Rs ${"%.0f".format(s.ratePerUnit)}/unit par).\n")
-                append("Meter tab mein KE reading daalein to bill ke slabs ke saath pakka hisaab banega.")
-            }
-            append("\n\nYe andaza hai - rates wahi jo Meter tab mein set hain.")
-        }
+        return "Is mahine (${s.fromLabel} se) solar ne ${"%.1f".format(s.solarUnits)} units banaye.\n" +
+            "Rs ${"%.0f".format(s.ratePerUnit)}/unit ke hisaab se ~Rs ${"%,d".format(s.saved)} ki bachat.\n\n" +
+            "Ye andaza hai - rate Units tab mein badal sakte hain."
     }
 }

@@ -81,8 +81,7 @@ fun ReportsScreen(refreshKey: Any, onBack: () -> Unit) {
         item {
             SectionCard("Solar vs ghar ka kharch", Icons.Filled.BarChart) {
                 GroupedBarsChart(
-                    series = listOf(SolarColor to buckets.map { it.solarWh / 1000 }, LoadColor to buckets.map { it.loadWh / 1000 },
-                        GridColor to buckets.map { it.gridWh / 1000 }),
+                    series = listOf(SolarColor to buckets.map { it.solarWh / 1000 }, LoadColor to buckets.map { it.loadWh / 1000 }),
                     labels = buckets.map { it.label },
                     axisColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     gridLineColor = MaterialTheme.colorScheme.outlineVariant
@@ -91,10 +90,9 @@ fun ReportsScreen(refreshKey: Any, onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     LegendDot(SolarColor, "Solar ${kwh(buckets.sumOf { it.solarWh })}")
                     LegendDot(LoadColor, "Ghar ${kwh(buckets.sumOf { it.loadWh })}")
-                    LegendDot(GridColor, "Grid ${kwh(buckets.sumOf { it.gridWh })}")
                 }
                 Spacer(Modifier.height(6.dp))
-                Text("units (kWh). Grid aur ghar ka kharch woh hai jo inverter ne naapa - jab ghar seedha grid par ho, wo hissa is mein nahi.",
+                Text("units (kWh). Ghar ka kharch woh hai jo inverter ne naapa - jab ghar seedha grid par ho, wo hissa is mein nahi.",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -148,22 +146,17 @@ fun ReportsScreen(refreshKey: Any, onBack: () -> Unit) {
 
         // ---- savings ----
         item {
-            SectionCard("Bijli bill ki bachat", Icons.Filled.Savings) {
-                Text("Is bill mein (${savings.fromLabel} se)", style = MaterialTheme.typography.labelSmall,
+            SectionCard("Solar se bachat", Icons.Filled.Savings) {
+                Text("Is mahine (${savings.fromLabel} se)", style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(6.dp))
                 RowKV("Solar ne banaye", "${"%.1f".format(savings.solarUnits)} units")
-                savings.gridUnits?.let { RowKV("Grid se liye (KE meter)", "${"%.1f".format(it)} units") }
-                savings.billNow?.let { RowKV("Bill ab tak (andaza)", "Rs ${"%,d".format(it)}") }
-                savings.billWithoutSolar?.let { RowKV("Solar na hota to", "Rs ${"%,d".format(it)}") }
+                RowKV("Rate", "Rs ${"%.0f".format(savings.ratePerUnit)} / unit")
                 HorizontalDivider(Modifier.padding(vertical = 6.dp), color = MaterialTheme.colorScheme.outlineVariant)
-                RowKV("Bachat", "Rs ${"%,d".format(savings.saved)}", BatteryColor)
+                RowKV("Bachat (andaza)", "Rs ${"%,d".format(savings.saved)}", BatteryColor)
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    if (savings.gridUnits == null) "Meter tab mein KE reading aur bill ke rates daalein - phir slabs ke saath pakka hisaab banega."
-                    else "Andaza - Meter tab ke rates aur slabs se. Solar ki wajah se slab neeche rehna bhi is mein shamil hai.",
-                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text("Rate Units tab mein bachat wale number par tap kar ke badal sakte hain.",
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

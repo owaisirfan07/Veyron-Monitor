@@ -55,7 +55,8 @@ fun PowerCurveChart(
     samples: List<EnergyStore.Sample>,
     axisColor: Color,
     gridLineColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    solarOnly: Boolean = false
 ) {
     Canvas(modifier = modifier.fillMaxWidth().height(210.dp)) {
         val leftPad = 44.dp.toPx()
@@ -63,7 +64,7 @@ fun PowerCurveChart(
         val topPad = 8.dp.toPx()
         val w = size.width - leftPad
         val h = size.height - bottomPad - topPad
-        val maxW = samples.maxOfOrNull { max(it.solarW, max(it.gridW, it.loadW)) } ?: 0f
+        val maxW = samples.maxOfOrNull { if (solarOnly) it.solarW else max(it.solarW, max(it.gridW, it.loadW)) } ?: 0f
         val top = niceTop(max(maxW, 100f))
         val textPx = 10.dp.toPx()
 
@@ -121,8 +122,10 @@ fun PowerCurveChart(
                 drawPath(path, color, style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round,
                     pathEffect = if (dashed) PathEffect.dashPathEffect(floatArrayOf(10f, 8f)) else null))
             }
-            line({ it.loadW }, LoadColor, 1.6.dp.toPx(), dashed = true)
-            line({ it.gridW }, GridColor, 2.dp.toPx())
+            if (!solarOnly) {
+                line({ it.loadW }, LoadColor, 1.6.dp.toPx(), dashed = true)
+                line({ it.gridW }, GridColor, 2.dp.toPx())
+            }
             line({ it.solarW }, SolarDeep, 2.4.dp.toPx())
         }
     }

@@ -73,23 +73,27 @@ private const val STALE_THRESHOLD_MS = 20 * 60_000L
 // A reading younger than this (by the inverter's own clock) counts as "Live".
 private const val LIVE_THRESHOLD_MS = 8 * 60_000L
 
-private enum class Screen { DASHBOARD, SETTINGS, ENERGY, METER, SCHEDULE, WARNINGS, REPORTS, ASSISTANT }
+private enum class Screen { DASHBOARD, SETTINGS, ENERGY, SCHEDULE, WARNINGS, REPORTS, ASSISTANT }
 
 class MainActivity : ComponentActivity() {
-    companion object {
-        /** Set when the monthly meter reminder notification is tapped. */
-        val openMeter = kotlinx.coroutines.flow.MutableStateFlow(false)
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        if (intent.getBooleanExtra(com.veyronmonitor.app.schedule.MeterReminder.EXTRA_OPEN_METER, false)) openMeter.value = true
+    /** The KE meter section was removed - cancel its monthly reminder if an older version had set it. */
+    private fun cancelOldMeterReminder() {
+        try {
+            val pi = android.app.PendingIntent.getBroadcast(
+                this, 9090,
+                Intent().setClassName(packageName, "com.veyronmonitor.app.schedule.MeterReminderReceiver"),
+                android.app.PendingIntent.FLAG_NO_CREATE or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            if (pi != null) {
+                (getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager).cancel(pi)
+                pi.cancel()
+            }
+        } catch (_: Exception) { }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (intent?.getBooleanExtra(com.veyronmonitor.app.schedule.MeterReminder.EXTRA_OPEN_METER, false) == true) openMeter.value = true
-        com.veyronmonitor.app.schedule.MeterReminder.schedule(this)
+        cancelOldMeterReminder()
         setContent {
             VeyronMonitorTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -130,10 +134,7 @@ private fun AppRoot() {
     var batteryCfg by remember { mutableStateOf(com.veyronmonitor.app.data.BatteryConfig.get(context)) }
     val chat = remember { mutableStateListOf<com.veyronmonitor.app.ui.ChatMsg>() }
     var chatBusy by remember { mutableStateOf(false) }
-    val customRates = remember(meterVersion) {
-        context.getSharedPreferences("veyron_monitor_meter", android.content.Context.MODE_PRIVATE).contains("bill_rates")
-    }
-    val openMeterRequest by MainActivity.openMeter.collectAsState()
+
     var backgroundEnabled by remember { mutableStateOf(MonitorService.isEnabled(context)) }
     var batteryRestricted by remember { mutableStateOf(!MonitorService.isIgnoringBatteryOptimizations(context)) }
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -288,10 +289,6 @@ private fun AppRoot() {
         }
     }
 
-    LaunchedEffect(openMeterRequest) {
-        if (openMeterRequest) { screen = Screen.METER; MainActivity.openMeter.value = false }
-    }
-
     // Try auto-login from saved credentials once, on first composition.
     LaunchedEffect(Unit) {
         val saved = CredentialStore.load(context)
@@ -420,12 +417,6 @@ private fun AppRoot() {
                                     label = { Text("Units") }
                                 )
                                 NavigationBarItem(
-                                    selected = screen == Screen.METER,
-                                    onClick = { screen = Screen.METER },
-                                    icon = { Icon(Icons.Filled.Speed, contentDescription = "Meter") },
-                                    label = { Text("Meter") }
-                                )
-                                NavigationBarItem(
                                     selected = screen == Screen.WARNINGS,
                                     onClick = {
                                         screen = Screen.WARNINGS
@@ -458,12 +449,9 @@ private fun AppRoot() {
                                     history = remember(energyState) { EnergyStore.getHistory(context) },
                                     sampleDays = remember(energyState.dayKey) { EnergyStore.sampleDays(context) },
                                     samplesFor = { EnergyStore.getSamples(context, it) },
-                                    tariff = if (customRates) remember(meterVersion, energyState.dayKey) {
-                                        com.veyronmonitor.app.data.Insights.effectiveRate(context)
-                                    } else tariff,
+                                    tariff = tariff,
                                     onTariffChange = { EnergyStore.setTariff(context, it); tariff = it },
                                     onOpenReports = { screen = Screen.REPORTS },
-                                    onRateTap = if (customRates) ({ screen = Screen.METER }) else null,
                                     backgroundEnabled = backgroundEnabled,
                                     onBackgroundToggle = {
                                         backgroundEnabled = it
@@ -481,31 +469,8 @@ private fun AppRoot() {
                                             context.startActivity(Intent(AndroidSettings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                                         }
                                     },
-                                    onResetSolar = { EnergyStore.resetSolar(context) },
-                                    onResetGrid = { EnergyStore.resetGrid(context) },
-                                    onResetLoad = { EnergyStore.resetLoad(context) }
+                                    onResetSolar = { EnergyStore.resetSolar(context) }
                                 )
-                                Screen.METER -> {
-                                    val v = meterVersion
-                                    val ms = com.veyronmonitor.app.data.MeterStore
-                                    com.veyronmonitor.app.ui.MeterScreen(
-                                        readings = remember(v) { ms.readings(context) },
-                                        periods = remember(v) { ms.periods(context) },
-                                        current = remember(v) { ms.current(context) },
-                                        rates = remember(v) { ms.rates(context) },
-                                        warnAt = remember(v) { ms.warnAt(context) },
-                                        limitAt = remember(v) { ms.limitAt(context) },
-                                        recentDays = remember(energyState.dayKey) {
-                                            EnergyStore.getHistory(context).filter { it.dateKey != energyState.dayKey }
-                                        },
-                                        onAddReading = { at, value, bill ->
-                                            ms.add(context, at, value, bill).also { if (it == null) meterVersion++ }
-                                        },
-                                        onRemoveReading = { ms.remove(context, it); meterVersion++ },
-                                        onSetLimits = { w, l -> ms.setLimits(context, w, l); meterVersion++ },
-                                        onSetRates = { ms.setRates(context, it); meterVersion++ }
-                                    )
-                                }
                                 Screen.WARNINGS -> WarningsScreen(
                                     entries = WarningLogStore.getLog(context)
                                 )
@@ -551,6 +516,7 @@ private fun AppRoot() {
                                         todaySolarWh = energyState.daySolarWh,
                                         todayGridWh = energyState.dayGridWh,
                                         todayLoadWh = energyState.dayLoadWh,
+                                        todayPeakW = energyState.dayPeakSolarW,
                                         onRefresh = { scope.launch { refreshData() } },
                                         onOpenUnits = { screen = Screen.ENERGY },
                                         runtime = remember(data, batteryCfg) { com.veyronmonitor.app.data.Insights.runtime(context, data) },

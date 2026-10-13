@@ -101,12 +101,12 @@ object Insights {
                 val toFull = b.capacityWh * (100 - soc) / 100.0 / chg
                 val avg = EnergyStore.load(c).avgDischargeW.takeIf { it > 20 }
                 Runtime(soc, "charging", avg, avg?.let { availWh / it }, null, toFull,
-                    "agar abhi bijli jaye - aam load ${avg?.toInt() ?: "--"} W par")
+                    if (avg != null) "aam load ${avg.toInt()} W par" else "charging ki abhi ki raftar se")
             }
             else -> {
                 val avg = EnergyStore.load(c).avgDischargeW.takeIf { it > 20 }
                 Runtime(soc, "idle", avg, avg?.let { availWh / it }, null, null,
-                    "agar abhi bijli jaye - aam load ${avg?.toInt() ?: "--"} W par")
+                    if (avg != null) "aam load ${avg.toInt()} W par" else "abhi aam load ka record nahi bana")
             }
         }
     }
@@ -181,47 +181,21 @@ object Insights {
         return listOf(
             Compare("Solar", a.sumOf { it.solarWh }, b.sumOf { it.solarWh }),
             Compare("Ghar ka kharch", a.sumOf { it.loadWh }, b.sumOf { it.loadWh }),
-            Compare("Grid (inverter)", a.sumOf { it.gridWh }, b.sumOf { it.gridWh }),
             Compare("Battery discharge", a.sumOf { it.dischargeWh }, b.sumOf { it.dischargeWh })
         )
     }
 
     // ---------------- bill savings ----------------
 
-    data class Savings(
-        val fromKey: String,
-        val fromLabel: String,
-        val solarUnits: Double,
-        val gridUnits: Double?,         // from meter readings (null if none yet)
-        val billNow: Long?,
-        val billWithoutSolar: Long?,
-        val saved: Long,
-        val ratePerUnit: Double
-    )
+    data class Savings(val fromLabel: String, val solarUnits: Double, val saved: Long, val ratePerUnit: Double)
 
-    /** Savings in the current bill month: what the bill would be if solar's units had come from KE. */
+    /** This month's solar units x the rate set on the Units screen. */
     fun savings(c: Context): Savings {
-        val rates = MeterStore.rates(c)
-        val cur = MeterStore.current(c)
-        val from = cur?.billReading?.at ?: Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1) }.timeInMillis
-        val fromKey = keyFmt.format(from)
-        val solar = EnergyStore.getHistory(c).filter { it.dateKey >= fromKey }.sumOf { it.solarWh } / 1000.0
-        return if (cur != null) {
-            val grid = cur.units
-            val now = MeterStore.bill(grid, rates)
-            val without = MeterStore.bill(grid + solar, rates)
-            Savings(fromKey, SimpleDateFormat("d MMM", Locale.US).format(from), solar, grid, now, without, without - now, MeterStore.rateAt(grid + solar, rates))
-        } else {
-            val rate = MeterStore.rateAt(solar, rates)
-            Savings(fromKey, SimpleDateFormat("d MMM", Locale.US).format(from), solar, null, null, null, (solar * rate).roundToInt().toLong(), rate)
-        }
-    }
-
-    /** Rs per unit to use for "bachat" on the Units screen. */
-    fun effectiveRate(c: Context): Double {
-        val cur = MeterStore.current(c)
-        val units = cur?.projected ?: cur?.units ?: 0.0
-        return MeterStore.rateAt(units, MeterStore.rates(c))
+        val from = Calendar.getInstance().apply { set(Calendar.DAY_OF_MONTH, 1) }
+        val prefix = SimpleDateFormat("yyyy-MM", Locale.US).format(from.time)
+        val solar = EnergyStore.getHistory(c).filter { it.dateKey.startsWith(prefix) }.sumOf { it.solarWh } / 1000.0
+        val rate = EnergyStore.tariff(c)
+        return Savings(SimpleDateFormat("d MMM", Locale.US).format(from.time), solar, (solar * rate).roundToInt().toLong(), rate)
     }
 
     // ---------------- weather (free, no key) ----------------
