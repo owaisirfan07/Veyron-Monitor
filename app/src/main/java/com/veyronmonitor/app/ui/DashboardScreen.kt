@@ -67,7 +67,10 @@ fun DashboardScreen(
     runtime: com.veyronmonitor.app.data.Insights.Runtime? = null,
     battery: com.veyronmonitor.app.data.BatteryConfig.Battery? = null,
     onSaveBattery: (com.veyronmonitor.app.data.BatteryConfig.Battery) -> Unit = {},
-    onOpenAssistant: () -> Unit = {}
+    onOpenAssistant: () -> Unit = {},
+    syncState: com.veyronmonitor.app.service.Poller.SyncState = com.veyronmonitor.app.service.Poller.SyncState.Idle,
+    dataAgeMin: Long? = null,
+    onSync: () -> Unit = {}
 ) {
     var showBattery by remember { mutableStateOf(false) }
     var showRawData by remember { mutableStateOf(false) }
@@ -103,9 +106,10 @@ fun DashboardScreen(
                 }
             }
             IconButton(onClick = onOpenAssistant) { Icon(Icons.Filled.QuestionAnswer, "Assistant") }
-            IconButton(onClick = onRefresh) {
-                if (isRefreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                else Icon(Icons.Filled.Refresh, "Refresh")
+            val syncing = syncState is com.veyronmonitor.app.service.Poller.SyncState.Running
+            IconButton(onClick = { if (!syncing) onSync() }) {
+                if (syncing || isRefreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Filled.Sync, "Sync")
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "More") }
@@ -123,6 +127,21 @@ fun DashboardScreen(
                     )
                 }
             }
+        }
+
+        run {
+            val fmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.US)
+            val text = when (val st = syncState) {
+                is com.veyronmonitor.app.service.Poller.SyncState.Running -> "Inverter se sync ho raha hai..."
+                is com.veyronmonitor.app.service.Poller.SyncState.Done ->
+                    "Sync: ${fmt.format(java.util.Date(st.at))}${if (st.auto) " (auto)" else ""}" + (dataAgeMin?.let { "  •  data $it min purana" } ?: "")
+                is com.veyronmonitor.app.service.Poller.SyncState.Failed -> "Sync nahi hua: ${st.message}"
+                else -> dataAgeMin?.let { "Data $it min purana  •  har 10 min auto sync" } ?: "Har 10 min auto sync"
+            }
+            Text(text, style = MaterialTheme.typography.labelSmall,
+                color = if (syncState is com.veyronmonitor.app.service.Poller.SyncState.Failed) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
         }
 
         if (errorMessage != null) {

@@ -131,6 +131,7 @@ private fun AppRoot() {
     val energyState by EnergyStore.state.collectAsState()
     var tariff by remember { mutableStateOf(EnergyStore.tariff(context)) }
     var meterVersion by remember { mutableIntStateOf(0) }
+    val syncState by Poller.syncState.collectAsState()
     var batteryCfg by remember { mutableStateOf(com.veyronmonitor.app.data.BatteryConfig.get(context)) }
     val chat = remember { mutableStateListOf<com.veyronmonitor.app.ui.ChatMsg>() }
     var chatBusy by remember { mutableStateOf(false) }
@@ -523,6 +524,9 @@ private fun AppRoot() {
                                         battery = batteryCfg,
                                         onSaveBattery = { com.veyronmonitor.app.data.BatteryConfig.set(context, it); batteryCfg = it },
                                         onOpenAssistant = { screen = Screen.ASSISTANT },
+                                        syncState = syncState,
+                                        dataAgeMin = remember(data, clockTick) { Poller.dataAgeMinutes() },
+                                        onSync = { scope.launch { withContext(Dispatchers.IO) { Poller.sync(context, auto = false) } } },
                                         onLogout = {
                                             MonitorService.stop(context)
                                             BackupWorker.cancel(context)

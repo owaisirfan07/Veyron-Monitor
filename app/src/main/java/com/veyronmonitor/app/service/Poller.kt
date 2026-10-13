@@ -65,6 +65,68 @@ object Poller {
 
     suspend fun fetchOnceLocked(context: Context): JSONObject = mutex.withLock { fetchOnce(context) }
 
+    // ---------------- inverter sync ----------------
+    // Same as the Sync button in the i.Solar app: send the dongle the command
+    // FORCE_TRAN=0 ("upload your data now"), wait 5 s, then read the fresh data.
+
+    sealed class SyncState {
+        object Idle : SyncState()
+        object Running : SyncState()
+        data class Done(val at: Long, val auto: Boolean) : SyncState()
+        data class Failed(val message: String) : SyncState()
+    }
+
+    private val _sync = MutableStateFlow<SyncState>(SyncState.Idle)
+    val syncState: StateFlow<SyncState> = _sync.asStateFlow()
+    @Volatile var lastSyncAt = 0L
+        private set
+
+    private fun syncError(e: Exception): String = when ((e as? TumcApi.ApiException)?.code) {
+        899004 -> "Inverter ne waqt par jawab nahi diya"
+        899003 -> "Sync command fail hui"
+        799011 -> "Inverter abhi command nahi le raha (shayad offline)"
+        799001 -> "Device serial number nahi mila"
+        else -> e.message ?: "network error"
+    }
+
+    /** Blocking (call from IO). Returns the fresh reading, or null if sync failed. */
+    suspend fun sync(context: Context, auto: Boolean): JSONObject? {
+        if (_sync.value == SyncState.Running) return null
+        _sync.value = SyncState.Running
+        lastSyncAt = System.currentTimeMillis()
+        return try {
+            mutex.withLock {
+                if (auth == null || device == null) {
+                    if (!login(context)) throw IllegalStateException("Not logged in")
+                }
+                try {
+                    TumcApi.setParam(auth!!, device!!, "FORCE_TRAN", "0")
+                } catch (e: TumcApi.ApiException) {
+                    // codes 7xxxxx / 8xxxxx are inverter answers; anything else may be an expired login
+                    if (e.code >= 700000) throw e
+                    if (!login(context)) throw e
+                    TumcApi.setParam(auth!!, device!!, "FORCE_TRAN", "0")
+                }
+            }
+            kotlinx.coroutines.delay(5_000) // the i.Solar app waits 5 s too
+            val json = fetchOnceLocked(context)
+            _sync.value = SyncState.Done(System.currentTimeMillis(), auto)
+            json
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            _sync.value = SyncState.Idle; throw e
+        } catch (e: Exception) {
+            _sync.value = SyncState.Failed(syncError(e))
+            null
+        }
+    }
+
+    /** Minutes since the newest reading was taken by the inverter (null if unknown). */
+    fun dataAgeMinutes(): Long? {
+        val t = _latest.value?.let { EnergyStore.readingTime(it) } ?: return null
+        if (t <= 0) return null
+        return ((System.currentTimeMillis() - t) / 60_000L).coerceAtLeast(0)
+    }
+
     /** Count a reading that some other code fetched. */
     @Synchronized
     fun handle(context: Context, json: JSONObject) {

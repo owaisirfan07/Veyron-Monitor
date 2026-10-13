@@ -39,6 +39,7 @@ class MonitorService : Service() {
         private const val CHANNEL_ID = "veyron_monitor"
         private const val NOTIF_ID = 42
         private const val POLL_MS = 90_000L
+        private const val AUTO_SYNC_MS = 10 * 60_000L
         private const val PREFS = "veyron_monitor_prefs"
         private const val KEY_ENABLED = "background_enabled"
 
@@ -103,7 +104,12 @@ class MonitorService : Service() {
             loop = scope.launch {
                 while (isActive) {
                     if (CredentialStore.load(this@MonitorService) == null) { stopSelf(); break }
-                    val reading = try { Poller.fetchOnceLocked(this@MonitorService) } catch (_: Exception) { null }
+                    var reading = try { Poller.fetchOnceLocked(this@MonitorService) } catch (_: Exception) { null }
+                    // Auto sync every 10 min, unless the data is already fresh (< 3 min old)
+                    val age = Poller.dataAgeMinutes()
+                    if (System.currentTimeMillis() - Poller.lastSyncAt >= AUTO_SYNC_MS && (age == null || age >= 3)) {
+                        Poller.sync(this@MonitorService, auto = true)?.let { reading = it }
+                    }
                     notifyUpdate(reading?.optDouble("pvInputPower1", 0.0))
                     delay(POLL_MS)
                 }
